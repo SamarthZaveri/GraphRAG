@@ -16,7 +16,7 @@ from .models import (
     IngestResponse, QueryRequest, QueryResponse, CompareResponse,
     BenchmarkSummary,
 )
-from . import query_engine, vector_baseline, benchmark
+from . import query_engine, vector_baseline, benchmark, ollama_client
 
 app = FastAPI(title="Ledger — GraphRAG for Contracts")
 
@@ -77,6 +77,7 @@ def status():
     store = GraphStore.load()
     summaries = load_summaries()
     sample_docs = sorted(p.stem for p in config.SAMPLE_DOCS_DIR.glob("*.txt"))
+    ollama_up = ollama_client.is_available()
     return {
         "ingested": store is not None and store.graph.number_of_nodes() > 0,
         "num_nodes": store.graph.number_of_nodes() if store else 0,
@@ -85,14 +86,22 @@ def status():
         "doc_ids": sorted({d for n in (store.graph.nodes(data=True) if store else [])
                             for d in n[1].get("source_docs", [])}),
         "sample_docs_available": sample_docs,
-        "api_key_configured": bool(config.ANTHROPIC_API_KEY),
+        "ollama_available": ollama_up,
+        "ollama_models": ollama_client.list_models() if ollama_up else [],
+        "ollama_host": config.OLLAMA_HOST,
+        "configured_models": {
+            "extraction": config.EXTRACTION_MODEL,
+            "answer": config.ANSWER_MODEL,
+            "judge": config.JUDGE_MODEL,
+        },
     }
 
 
 @app.post("/api/ingest/sample", response_model=IngestResponse)
 def ingest_sample():
-    if not config.ANTHROPIC_API_KEY:
-        raise HTTPException(400, "ANTHROPIC_API_KEY is not set on the server.")
+    if not ollama_client.is_available():
+        raise HTTPException(400, f"Can't reach Ollama at {config.OLLAMA_HOST}. Run `ollama serve` "
+                                  f"and `ollama pull {config.EXTRACTION_MODEL}` first.")
     paths = sorted(config.SAMPLE_DOCS_DIR.glob("*.txt"))
     if not paths:
         raise HTTPException(404, "No sample documents found.")
@@ -105,8 +114,9 @@ def ingest_sample():
 
 @app.post("/api/ingest/upload", response_model=IngestResponse)
 async def ingest_upload(files: List[UploadFile] = File(...)):
-    if not config.ANTHROPIC_API_KEY:
-        raise HTTPException(400, "ANTHROPIC_API_KEY is not set on the server.")
+    if not ollama_client.is_available():
+        raise HTTPException(400, f"Can't reach Ollama at {config.OLLAMA_HOST}. Run `ollama serve` "
+                                  f"and `ollama pull {config.EXTRACTION_MODEL}` first.")
     config.UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
     saved_paths = []
     for f in files:

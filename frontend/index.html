@@ -1,0 +1,579 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Ledger — GraphRAG for Contracts</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600;8..60,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
+<style>
+:root {
+  --ink: #12161d; --ink-2: #171d26; --panel: #1a212b; --panel-2: #212a35;
+  --border: #2b3543; --border-soft: #232b36;
+  --text: #e9e6dc; --text-dim: #a8afbc; --text-faint: #6c7688;
+  --emerald: #4a9c78; --emerald-dim: #2f5c48;
+  --brass: #cf9f2e; --brass-dim: #7a611e;
+  --rose: #c06356; --rose-dim: #6b352d;
+  --serif: "Source Serif 4", Georgia, serif;
+  --sans: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { background: var(--ink); color: var(--text); font-family: var(--sans); font-size: 15px; line-height: 1.55; -webkit-font-smoothing: antialiased; }
+h1, h2, h3, h4 { font-family: var(--serif); font-weight: 600; margin: 0; color: var(--text); }
+p { margin: 0 0 0.75em; }
+a { color: var(--emerald); }
+button { font-family: var(--sans); cursor: pointer; }
+textarea, select, input { font-family: var(--sans); }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 6px; }
+.mono { font-family: var(--mono); }
+
+.pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 3px; font-size: 12.5px; font-family: var(--mono); border: 1px solid var(--border); color: var(--text-dim); background: var(--panel-2); }
+.pill.doc { color: var(--brass); border-color: var(--brass-dim); }
+.pill.emerald { color: var(--emerald); border-color: var(--emerald-dim); }
+
+.btn { border: 1px solid var(--border); background: var(--panel-2); color: var(--text); padding: 9px 16px; border-radius: 4px; font-size: 14px; font-weight: 500; transition: border-color .15s, background .15s; }
+.btn:hover:not(:disabled) { border-color: var(--emerald); background: var(--ink-2); }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+.btn.primary { background: var(--emerald-dim); border-color: var(--emerald); color: #eafff2; }
+.btn.primary:hover:not(:disabled) { background: var(--emerald); }
+.btn.small { padding: 5px 10px; font-size: 12.5px; }
+
+.card { background: var(--panel); border: 1px solid var(--border-soft); border-radius: 6px; padding: 18px 20px; }
+
+.spinner { width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--emerald); border-radius: 50%; animation: spin .7s linear infinite; display: inline-block; vertical-align: -2px; margin-right: 6px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* layout */
+.shell { display: grid; grid-template-columns: 300px 1fr; height: 100vh; }
+.sidebar { background: var(--ink-2); border-right: 1px solid var(--border-soft); padding: 26px 22px; display: flex; flex-direction: column; overflow-y: auto; }
+.brand { display: flex; align-items: center; gap: 12px; margin-bottom: 30px; }
+.brand-mark { width: 38px; height: 38px; border-radius: 4px; background: linear-gradient(155deg, var(--emerald) 0%, var(--emerald-dim) 100%); color: #0e1712; font-family: var(--serif); font-weight: 700; font-size: 20px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.brand h1 { font-size: 21px; letter-spacing: .2px; }
+.tagline { color: var(--text-faint); font-size: 12.5px; margin: 2px 0 0; }
+.tabs { display: flex; flex-direction: column; gap: 3px; margin-bottom: 28px; }
+.tab-btn { text-align: left; background: transparent; border: none; color: var(--text-dim); font-size: 14.5px; padding: 9px 12px; border-radius: 5px; border-left: 2px solid transparent; }
+.tab-btn:hover { background: var(--panel); color: var(--text); }
+.tab-btn.active { background: var(--panel); color: var(--text); border-left: 2px solid var(--emerald); font-weight: 500; }
+.sidebar-section { padding-top: 20px; border-top: 1px solid var(--border-soft); }
+.sidebar-heading { font-size: 12px; color: var(--text-faint); font-weight: 500; margin-bottom: 10px; letter-spacing: .3px; }
+.dim-text { color: var(--text-dim); font-size: 13.5px; }
+.dim-text.small { font-size: 12.5px; margin-top: 10px; }
+.warn-text { color: var(--brass); font-size: 12.5px; margin-bottom: 10px; line-height: 1.5; }
+.error-text { color: var(--rose); font-size: 12.5px; margin-top: 8px; }
+.stat-grid { display: flex; gap: 14px; margin-bottom: 12px; }
+.stat { display: flex; flex-direction: column; }
+.stat-num { font-family: var(--serif); font-size: 22px; font-weight: 600; color: var(--emerald); }
+.stat-label { font-size: 11.5px; color: var(--text-faint); }
+.doc-pills { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+.upload-label { display: block; margin-top: 6px; cursor: pointer; }
+.link-btn { color: var(--text-faint); font-size: 12.5px; text-decoration: underline; text-decoration-color: var(--border); text-underline-offset: 3px; }
+.link-btn:hover { color: var(--emerald); }
+.sidebar-footer { margin-top: auto; padding-top: 22px; color: var(--text-faint); font-size: 12px; line-height: 1.6; }
+.main { overflow-y: auto; padding: 30px 40px; }
+.empty-state { display: flex; flex-direction: column; align-items: flex-start; justify-content: center; height: 60vh; max-width: 480px; color: var(--text-dim); }
+.empty-state h2 { margin-bottom: 10px; }
+.panel-header { margin-bottom: 22px; }
+.panel-header h2 { font-size: 24px; margin-bottom: 6px; }
+.panel-header p { color: var(--text-dim); font-size: 14px; }
+.hidden { display: none !important; }
+
+/* graph */
+#graph-canvas { width: 100%; height: 62vh; background: var(--ink-2); border: 1px solid var(--border-soft); border-radius: 6px; }
+.legend { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+.legend-item { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-dim); }
+.legend-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.node-detail { margin-top: 16px; }
+
+/* query */
+.ask-form { display: flex; gap: 10px; margin-bottom: 10px; }
+.ask-form textarea { flex: 1; background: var(--panel); border: 1px solid var(--border); color: var(--text); border-radius: 5px; padding: 11px 13px; font-size: 14.5px; resize: vertical; min-height: 46px; }
+.ask-controls { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; font-size: 13px; color: var(--text-dim); }
+.ask-controls select { background: var(--panel); border: 1px solid var(--border); color: var(--text); border-radius: 4px; padding: 5px 8px; }
+.compare-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.answer-col h3 { font-size: 15px; margin-bottom: 4px; }
+.answer-col .mode-badge { font-size: 11.5px; margin-bottom: 12px; }
+.answer-body { white-space: pre-wrap; font-size: 14.5px; line-height: 1.6; margin-bottom: 14px; }
+.citation { border-left: 2px solid var(--border); padding: 6px 10px; margin-bottom: 6px; font-size: 12px; color: var(--text-dim); }
+.citation .doc { color: var(--brass); font-family: var(--mono); }
+.sample-qs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 22px; }
+.sample-q { font-size: 12.5px; padding: 5px 11px; border: 1px solid var(--border); border-radius: 20px; color: var(--text-dim); background: var(--panel); }
+.sample-q:hover { border-color: var(--emerald); color: var(--text); }
+
+/* communities */
+.community-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; }
+.community-card h3 { font-size: 16px; margin-bottom: 8px; }
+.community-card p { font-size: 13.5px; color: var(--text-dim); }
+.community-members { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 10px; }
+
+/* benchmark */
+.bench-summary { display: flex; gap: 30px; margin-bottom: 24px; }
+.bench-score { text-align: center; }
+.bench-score .num { font-family: var(--serif); font-size: 40px; font-weight: 700; }
+.bench-score.graphrag .num { color: var(--emerald); }
+.bench-score.vector .num { color: var(--brass); }
+.bench-score .label { font-size: 12.5px; color: var(--text-faint); margin-top: 4px; }
+.bar-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; font-size: 12.5px; }
+.bar-track { flex: 1; height: 8px; background: var(--panel-2); border-radius: 4px; overflow: hidden; }
+.bar-fill { height: 100%; }
+.bar-fill.graphrag { background: var(--emerald); }
+.bar-fill.vector { background: var(--brass); }
+table.bench-table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+table.bench-table th, table.bench-table td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border-soft); vertical-align: top; }
+table.bench-table th { color: var(--text-faint); font-weight: 500; font-size: 12px; }
+.cat-tag { font-family: var(--mono); font-size: 11px; padding: 2px 7px; border-radius: 3px; border: 1px solid var(--border); color: var(--text-dim); }
+</style>
+</head>
+<body>
+
+<div class="shell">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">L</div>
+      <div>
+        <h1>Ledger</h1>
+        <p class="tagline">GraphRAG for contracts &amp; filings</p>
+      </div>
+    </div>
+
+    <nav class="tabs" id="tabs">
+      <button class="tab-btn active" data-tab="graph">Knowledge graph</button>
+      <button class="tab-btn" data-tab="ask">Ask</button>
+      <button class="tab-btn" data-tab="communities">Communities</button>
+      <button class="tab-btn" data-tab="benchmark">Benchmark</button>
+    </nav>
+
+    <div class="sidebar-section">
+      <h4 class="sidebar-heading">Corpus</h4>
+      <div id="ollama-warning"></div>
+      <div id="ingest-controls"></div>
+      <div id="ingest-log"></div>
+      <div id="ingest-error"></div>
+    </div>
+
+    <div class="sidebar-footer">
+      <p>Local search walks the graph around specific entities. Global search reads across community summaries. The benchmark scores both against a vanilla vector-RAG baseline on the same questions. Runs fully offline via a local Ollama model — no API key, nothing leaves your machine.</p>
+    </div>
+  </aside>
+
+  <main class="main" id="main">
+    <section id="tab-graph"></section>
+    <section id="tab-ask" class="hidden"></section>
+    <section id="tab-communities" class="hidden"></section>
+    <section id="tab-benchmark" class="hidden"></section>
+  </main>
+</div>
+
+<script>
+const API_BASE = (localStorage.getItem('ledger_api_base') || 'http://localhost:8000') + '/api';
+
+const state = { status: null, ingesting: false, tab: 'graph', network: null };
+
+async function api(path, opts = {}) {
+  const res = await fetch(API_BASE + path, opts);
+  if (!res.ok) {
+    let msg = res.statusText;
+    try { const j = await res.json(); msg = j.detail || msg; } catch (e) {}
+    throw new Error(msg);
+  }
+  return res.json();
+}
+
+function el(html) {
+  const t = document.createElement('template');
+  t.innerHTML = html.trim();
+  return t.content.firstChild;
+}
+
+function escapeHtml(s) {
+  return (s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+/* ---------------- sidebar ---------------- */
+
+async function refreshStatus() {
+  try {
+    state.status = await api('/status');
+  } catch (e) {
+    state.status = null;
+  }
+  renderSidebar();
+  if (state.tab === 'graph') renderGraphTab();
+}
+
+function renderSidebar() {
+  const s = state.status;
+  const warnEl = document.getElementById('ollama-warning');
+  const controlsEl = document.getElementById('ingest-controls');
+
+  warnEl.innerHTML = '';
+  if (s && !s.ollama_available) {
+    warnEl.appendChild(el(`<p class="warn-text">Can't reach Ollama at ${escapeHtml(s.ollama_host)}. Run <span class="mono">ollama serve</span> and <span class="mono">ollama pull ${escapeHtml(s.configured_models.extraction)}</span>, then reload.</p>`));
+  } else if (!s) {
+    warnEl.appendChild(el(`<p class="warn-text">Can't reach the Ledger backend. Is <span class="mono">uvicorn app.main:app</span> running on port 8000?</p>`));
+  }
+
+  controlsEl.innerHTML = '';
+  if (!s || !s.ingested) {
+    controlsEl.appendChild(el(`<p class="dim-text">No documents ingested yet.</p>`));
+    const btn = el(`<button class="btn primary" id="ingest-sample-btn">${state.ingesting ? '<span class="spinner"></span> Ingesting…' : 'Ingest 3 sample SEC filings'}</button>`);
+    btn.disabled = state.ingesting;
+    btn.onclick = handleIngestSample;
+    controlsEl.appendChild(btn);
+  } else {
+    const grid = el(`<div class="stat-grid">
+      <div class="stat"><span class="stat-num">${s.num_nodes}</span><span class="stat-label">entities</span></div>
+      <div class="stat"><span class="stat-num">${s.num_edges}</span><span class="stat-label">relations</span></div>
+      <div class="stat"><span class="stat-num">${s.num_communities}</span><span class="stat-label">communities</span></div>
+    </div>`);
+    controlsEl.appendChild(grid);
+    const pills = el('<div class="doc-pills"></div>');
+    (s.doc_ids || []).forEach(d => pills.appendChild(el(`<span class="pill doc">${escapeHtml(d)}</span>`)));
+    controlsEl.appendChild(pills);
+  }
+
+  const uploadLabel = el(`<label class="upload-label">
+    <input type="file" multiple accept=".txt,.pdf" id="upload-input" ${state.ingesting ? 'disabled' : ''} hidden>
+    <span class="link-btn">${s && s.ingested ? 'Re-ingest with your own files' : 'or upload your own .txt / .pdf files'}</span>
+  </label>`);
+  controlsEl.appendChild(uploadLabel);
+  document.getElementById('upload-input')?.addEventListener('change', handleUpload);
+
+  const errEl = document.getElementById('ingest-error');
+  errEl.innerHTML = '';
+}
+
+async function handleIngestSample() {
+  state.ingesting = true;
+  document.getElementById('ingest-error').innerHTML = '';
+  document.getElementById('ingest-log').innerHTML = '';
+  renderSidebar();
+  try {
+    const res = await api('/ingest/sample', { method: 'POST' });
+    document.getElementById('ingest-log').innerHTML =
+      `<p class="dim-text small">Ingested ${res.doc_ids.length} doc(s) · ${res.num_chunks} chunks · ${res.num_entities} entities · ${res.num_triples} triples · ${res.num_communities} communities</p>`;
+    await refreshStatus();
+  } catch (e) {
+    document.getElementById('ingest-error').innerHTML = `<p class="error-text">${escapeHtml(e.message)}</p>`;
+  } finally {
+    state.ingesting = false;
+    renderSidebar();
+  }
+}
+
+async function handleUpload(ev) {
+  const files = Array.from(ev.target.files || []);
+  if (files.length === 0) return;
+  state.ingesting = true;
+  document.getElementById('ingest-error').innerHTML = '';
+  document.getElementById('ingest-log').innerHTML = '';
+  renderSidebar();
+  const form = new FormData();
+  files.forEach(f => form.append('files', f));
+  try {
+    const res = await api('/ingest/upload', { method: 'POST', body: form });
+    document.getElementById('ingest-log').innerHTML =
+      `<p class="dim-text small">Ingested ${res.doc_ids.length} doc(s) · ${res.num_chunks} chunks · ${res.num_entities} entities · ${res.num_triples} triples · ${res.num_communities} communities</p>`;
+    await refreshStatus();
+  } catch (e) {
+    document.getElementById('ingest-error').innerHTML = `<p class="error-text">${escapeHtml(e.message)}</p>`;
+  } finally {
+    state.ingesting = false;
+    renderSidebar();
+  }
+}
+
+/* ---------------- tabs ---------------- */
+
+document.getElementById('tabs').addEventListener('click', (e) => {
+  const btn = e.target.closest('.tab-btn');
+  if (!btn) return;
+  setTab(btn.dataset.tab);
+});
+
+function setTab(tab) {
+  state.tab = tab;
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  document.querySelectorAll('#main > section').forEach(s => s.classList.add('hidden'));
+  document.getElementById('tab-' + tab).classList.remove('hidden');
+  if (tab === 'graph') renderGraphTab();
+  if (tab === 'ask') renderAskTab();
+  if (tab === 'communities') renderCommunitiesTab();
+  if (tab === 'benchmark') renderBenchmarkTab();
+}
+
+function emptyState(title, body) {
+  return `<div class="empty-state"><h2>${escapeHtml(title)}</h2><p>${escapeHtml(body)}</p></div>`;
+}
+
+/* ---------------- graph tab ---------------- */
+
+const TYPE_COLORS = {
+  Party: '#4a9c78', Agreement: '#cf9f2e', Money: '#c06356', Date: '#6c8ebf',
+  Property: '#9c6dd4', Obligation: '#d4884a', Role: '#5ba3a3', Location: '#7a8599', Other: '#8a93a3',
+};
+
+async function renderGraphTab() {
+  const container = document.getElementById('tab-graph');
+  if (!state.status || !state.status.ingested) {
+    container.innerHTML = emptyState('No graph yet', 'Ingest the sample SEC filings (or your own documents) from the sidebar to build the knowledge graph.');
+    return;
+  }
+  container.innerHTML = `
+    <div class="panel-header">
+      <h2>Knowledge graph</h2>
+      <p>Entities and relationships extracted from the corpus. Click a node to inspect it.</p>
+    </div>
+    <div id="graph-canvas"></div>
+    <div class="legend">${Object.entries(TYPE_COLORS).map(([k,v]) => `<span class="legend-item"><span class="legend-dot" style="background:${v}"></span>${k}</span>`).join('')}</div>
+    <div class="card node-detail hidden" id="node-detail"></div>
+  `;
+  let data;
+  try {
+    data = await api('/graph');
+  } catch (e) {
+    container.innerHTML = emptyState('Could not load graph', e.message);
+    return;
+  }
+  const nodes = new vis.DataSet(data.nodes.map(n => ({
+    id: n.id, label: n.id.length > 22 ? n.id.slice(0, 20) + '…' : n.id,
+    title: n.id, color: TYPE_COLORS[n.type] || TYPE_COLORS.Other,
+    value: Math.max(6, Math.min(30, 4 + n.degree * 2)),
+    font: { color: '#e9e6dc', size: 12, face: 'IBM Plex Sans' },
+  })));
+  const edges = new vis.DataSet(data.links.map((l, i) => ({
+    id: i, from: l.source, to: l.target, arrows: 'to',
+    color: { color: '#2b3543', highlight: '#4a9c78' }, width: 1,
+  })));
+  const network = new vis.Network(document.getElementById('graph-canvas'), { nodes, edges }, {
+    physics: { stabilization: true, barnesHut: { gravitationalConstant: -12000, springLength: 140 } },
+    interaction: { hover: true },
+    nodes: { shape: 'dot', borderWidth: 1 },
+  });
+  state.network = network;
+  network.on('click', (params) => {
+    const detailEl = document.getElementById('node-detail');
+    if (params.nodes.length === 0) { detailEl.classList.add('hidden'); return; }
+    const nodeData = data.nodes.find(n => n.id === params.nodes[0]);
+    if (!nodeData) return;
+    detailEl.classList.remove('hidden');
+    detailEl.innerHTML = `
+      <h3>${escapeHtml(nodeData.id)}</h3>
+      <p><span class="pill emerald">${escapeHtml(nodeData.type)}</span> ${(nodeData.source_docs||[]).map(d=>`<span class="pill doc">${escapeHtml(d)}</span>`).join(' ')}</p>
+      <p class="dim-text">${escapeHtml(nodeData.description || 'No description extracted.')}</p>
+    `;
+  });
+}
+
+/* ---------------- ask tab ---------------- */
+
+const SAMPLE_QUESTIONS = [
+  "What percentage of the combined company will KME Group own?",
+  "Compare the governing-law provisions across all three documents.",
+  "What obligations does the Sponsor have regarding the SEDA Class B Shares?",
+  "Which entities appear in more than one document?",
+];
+
+function renderAskTab() {
+  const container = document.getElementById('tab-ask');
+  if (!state.status || !state.status.ingested) {
+    container.innerHTML = emptyState('Nothing to ask yet', 'Ingest documents from the sidebar first.');
+    return;
+  }
+  container.innerHTML = `
+    <div class="panel-header">
+      <h2>Ask</h2>
+      <p>Ask a question and compare the GraphRAG answer against a vanilla vector-RAG baseline, side by side.</p>
+    </div>
+    <div class="sample-qs">${SAMPLE_QUESTIONS.map(q => `<button class="sample-q" data-q="${escapeHtml(q)}">${escapeHtml(q)}</button>`).join('')}</div>
+    <div class="ask-form">
+      <textarea id="ask-input" placeholder="Ask a question about the ingested contracts…"></textarea>
+      <button class="btn primary" id="ask-btn">Ask</button>
+    </div>
+    <div class="ask-controls">
+      <label><input type="checkbox" id="ask-compare" checked> Compare vs. vector RAG</label>
+      <label>Mode
+        <select id="ask-mode">
+          <option value="auto" selected>Auto</option>
+          <option value="local">Local</option>
+          <option value="global">Global</option>
+        </select>
+      </label>
+    </div>
+    <div id="ask-results"></div>
+  `;
+  container.querySelectorAll('.sample-q').forEach(b => b.onclick = () => {
+    document.getElementById('ask-input').value = b.dataset.q;
+    runAsk();
+  });
+  document.getElementById('ask-btn').onclick = runAsk;
+  document.getElementById('ask-input').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) runAsk();
+  });
+}
+
+function renderAnswer(title, badgeClass, resp) {
+  const cites = (resp.citations || []).map(c => `<div class="citation"><span class="doc">${escapeHtml(c.doc_id)}</span> — ${escapeHtml((c.snippet||'').slice(0,180))}${(c.snippet||'').length>180?'…':''}</div>`).join('');
+  return `
+    <div class="answer-col">
+      <h3>${title}</h3>
+      <div class="mode-badge pill ${badgeClass}">${escapeHtml(resp.mode_used || '')}</div>
+      <div class="answer-body">${escapeHtml(resp.answer)}</div>
+      ${cites ? `<div class="dim-text small" style="margin-bottom:6px;">Sources</div>${cites}` : ''}
+    </div>
+  `;
+}
+
+async function runAsk() {
+  const question = document.getElementById('ask-input').value.trim();
+  if (!question) return;
+  const mode = document.getElementById('ask-mode').value;
+  const compare = document.getElementById('ask-compare').checked;
+  const resultsEl = document.getElementById('ask-results');
+  resultsEl.innerHTML = `<p class="dim-text"><span class="spinner"></span> Thinking…</p>`;
+  try {
+    if (compare) {
+      const res = await api('/query/compare', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question, mode }),
+      });
+      resultsEl.innerHTML = `<div class="compare-grid">
+        ${renderAnswer('GraphRAG', 'emerald', res.graphrag)}
+        ${renderAnswer('Vector RAG (baseline)', '', res.vector_rag)}
+      </div>`;
+    } else {
+      const res = await api('/query', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question, mode }),
+      });
+      resultsEl.innerHTML = `<div class="card">${renderAnswer('GraphRAG', 'emerald', res)}</div>`;
+    }
+  } catch (e) {
+    resultsEl.innerHTML = `<p class="error-text">${escapeHtml(e.message)}</p>`;
+  }
+}
+
+/* ---------------- communities tab ---------------- */
+
+async function renderCommunitiesTab() {
+  const container = document.getElementById('tab-communities');
+  if (!state.status || !state.status.ingested) {
+    container.innerHTML = emptyState('No communities yet', 'Ingest documents from the sidebar first.');
+    return;
+  }
+  container.innerHTML = `<div class="panel-header"><h2>Communities</h2><p>Clusters of related entities, each with an LLM-generated summary — this is what powers "global search" answers.</p></div><div id="community-grid" class="community-grid"><p class="dim-text"><span class="spinner"></span> Loading…</p></div>`;
+  try {
+    const summaries = await api('/communities');
+    const gridEl = document.getElementById('community-grid');
+    if (summaries.length === 0) {
+      gridEl.innerHTML = `<p class="dim-text">No multi-entity communities were found (try ingesting more documents).</p>`;
+      return;
+    }
+    gridEl.innerHTML = summaries.map(s => `
+      <div class="card community-card">
+        <h3>${escapeHtml(s.title)}</h3>
+        <p>${escapeHtml(s.summary)}</p>
+        <div class="community-members">${s.members.slice(0,10).map(m => `<span class="pill">${escapeHtml(m)}</span>`).join('')}</div>
+      </div>
+    `).join('');
+  } catch (e) {
+    document.getElementById('community-grid').innerHTML = `<p class="error-text">${escapeHtml(e.message)}</p>`;
+  }
+}
+
+/* ---------------- benchmark tab ---------------- */
+
+async function renderBenchmarkTab() {
+  const container = document.getElementById('tab-benchmark');
+  if (!state.status || !state.status.ingested) {
+    container.innerHTML = emptyState('Nothing to benchmark yet', 'Ingest documents from the sidebar first.');
+    return;
+  }
+  container.innerHTML = `
+    <div class="panel-header">
+      <h2>Benchmark</h2>
+      <p>Runs the same fixed question set against GraphRAG and vector RAG, then scores each answer 0–5 against a reference answer using an LLM judge.</p>
+    </div>
+    <button class="btn primary" id="run-bench-btn">Run benchmark</button>
+    <div id="bench-results" style="margin-top:22px;"></div>
+  `;
+  document.getElementById('run-bench-btn').onclick = runBenchmark;
+  try {
+    const existing = await api('/benchmark/results');
+    if (existing.results && existing.results.length) renderBenchResults(existing);
+  } catch (e) {}
+}
+
+function renderBenchResults(summary) {
+  const resultsEl = document.getElementById('bench-results');
+  const catBars = {};
+  summary.results.forEach(r => {
+    catBars[r.category] = catBars[r.category] || { g: [], v: [] };
+    catBars[r.category].g.push(r.graphrag_score);
+    catBars[r.category].v.push(r.vector_rag_score);
+  });
+  const avg = arr => arr.reduce((a,b)=>a+b,0) / arr.length;
+
+  resultsEl.innerHTML = `
+    <div class="bench-summary">
+      <div class="bench-score graphrag"><div class="num">${summary.graphrag_avg.toFixed(2)}</div><div class="label">GraphRAG avg / 5</div></div>
+      <div class="bench-score vector"><div class="num">${summary.vector_rag_avg.toFixed(2)}</div><div class="label">Vector RAG avg / 5</div></div>
+    </div>
+    <div class="card" style="margin-bottom:22px;">
+      ${Object.entries(catBars).map(([cat, v]) => `
+        <div class="bar-row">
+          <span class="cat-tag" style="width:90px;">${escapeHtml(cat)}</span>
+          <div class="bar-track"><div class="bar-fill graphrag" style="width:${avg(v.g)/5*100}%"></div></div>
+          <span style="width:30px;">${avg(v.g).toFixed(1)}</span>
+          <div class="bar-track"><div class="bar-fill vector" style="width:${avg(v.v)/5*100}%"></div></div>
+          <span style="width:30px;">${avg(v.v).toFixed(1)}</span>
+        </div>
+      `).join('')}
+    </div>
+    <table class="bench-table">
+      <thead><tr><th>Question</th><th>Category</th><th>GraphRAG</th><th>Vector RAG</th><th>Judge notes</th></tr></thead>
+      <tbody>
+        ${summary.results.map(r => `
+          <tr>
+            <td>${escapeHtml(r.question)}</td>
+            <td><span class="cat-tag">${escapeHtml(r.category)}</span></td>
+            <td style="color:var(--emerald);font-weight:600;">${r.graphrag_score}</td>
+            <td style="color:var(--brass);font-weight:600;">${r.vector_rag_score}</td>
+            <td class="dim-text">${escapeHtml(r.judge_rationale)}</td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
+async function runBenchmark() {
+  const btn = document.getElementById('run-bench-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Running benchmark (this calls the local model ~24+ times, may take a while)…';
+  const resultsEl = document.getElementById('bench-results');
+  resultsEl.innerHTML = '';
+  try {
+    const summary = await api('/benchmark/run', { method: 'POST' });
+    renderBenchResults(summary);
+  } catch (e) {
+    resultsEl.innerHTML = `<p class="error-text">${escapeHtml(e.message)}</p>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Run benchmark again';
+  }
+}
+
+/* ---------------- boot ---------------- */
+
+refreshStatus();
+setInterval(() => { if (!state.ingesting) refreshStatus(); }, 15000);
+</script>
+</body>
+</html>

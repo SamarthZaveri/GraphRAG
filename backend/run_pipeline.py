@@ -5,7 +5,8 @@ community summaries, run the benchmark, and print a report. Useful for a
 quick end-to-end sanity check without starting the FastAPI server / frontend.
 
 Usage:
-    export ANTHROPIC_API_KEY=sk-ant-...
+    ollama serve                     # if not already running
+    ollama pull llama3.1             # once
     python run_pipeline.py
 """
 import sys
@@ -14,7 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from app import config
+from app import config, ollama_client
 from app.extraction import extract_document, chunk_text
 from app.graph_store import reset_store
 from app.community import build_community_summaries, save_summaries
@@ -22,8 +23,10 @@ from app import vector_baseline, benchmark
 
 
 def main():
-    if not config.ANTHROPIC_API_KEY:
-        print("ERROR: export ANTHROPIC_API_KEY before running this script.")
+    if not ollama_client.is_available():
+        print(f"ERROR: could not reach Ollama at {config.OLLAMA_HOST}.")
+        print("Start it with `ollama serve` and make sure you've run "
+              f"`ollama pull {config.EXTRACTION_MODEL}`.")
         sys.exit(1)
 
     print("=== Ledger: GraphRAG pipeline ===\n")

@@ -1,6 +1,6 @@
 fastapi==0.115.0
 uvicorn[standard]==0.30.6
-anthropic==0.34.2
+requests==2.32.3
 networkx==3.3
 python-igraph==0.11.6
 leidenalg==0.10.2

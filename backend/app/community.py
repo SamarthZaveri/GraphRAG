@@ -19,7 +19,7 @@ import networkx as nx
 from . import config
 from .graph_store import GraphStore
 from .models import CommunitySummary
-from .extraction import get_client, _strip_json_fences
+from .ollama_client import chat_json
 
 
 def detect_communities(graph: nx.MultiDiGraph) -> Dict[str, int]:
@@ -70,7 +70,8 @@ relationship facts connecting them, write:
   (obligations, ownership, agreements, monetary terms), and anything a compliance/financial \
   analyst reviewing multiple contracts would want to know about this cluster.
 
-Be factual and grounded only in the provided facts. Return ONLY JSON: {"title": str, "summary": str}
+Be factual and grounded only in the provided facts. Return ONLY JSON, no preamble: \
+{"title": str, "summary": str}
 """
 
 
@@ -89,18 +90,10 @@ def summarize_community(members: List[str], graph: nx.MultiDiGraph) -> dict:
             seen.add(key)
             lines.append(f"- {u} --[{data.get('predicate')}]--> {v} (source: {data.get('doc_id')})")
 
-    client = get_client()
-    resp = client.messages.create(
-        model=config.EXTRACTION_MODEL,
-        max_tokens=500,
-        system=SUMMARY_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": "\n".join(lines)}],
-    )
-    raw = _strip_json_fences("".join(b.text for b in resp.content if b.type == "text"))
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        return {"title": f"Community ({len(members)} entities)", "summary": raw[:600]}
+    result = chat_json(config.EXTRACTION_MODEL, SUMMARY_SYSTEM_PROMPT, "\n".join(lines), max_tokens=500)
+    if not result:
+        return {"title": f"Community ({len(members)} entities)", "summary": ""}
+    return result
 
 
 def build_community_summaries(store: GraphStore) -> List[CommunitySummary]:

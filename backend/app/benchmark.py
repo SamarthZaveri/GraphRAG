@@ -9,7 +9,7 @@ import json
 from typing import List
 
 from . import config, query_engine, vector_baseline
-from .extraction import get_client, _strip_json_fences
+from .ollama_client import chat_json
 from .models import BenchmarkQuestion, BenchmarkResult, BenchmarkSummary
 
 
@@ -34,26 +34,19 @@ Penalize hallucinated specifics (numbers, names, dates) that aren't in the refer
 even if the overall gist is right. Reward correct citation of which document a fact came from \
 when the reference distinguishes documents.
 
-Return ONLY JSON: {"score_a": float, "score_b": float, "rationale": str} where the rationale \
-is 1-2 sentences comparing the two answers."""
+Return ONLY JSON, no preamble: {"score_a": float, "score_b": float, "rationale": str} where the \
+rationale is 1-2 sentences comparing the two answers."""
 
 
 def judge(question: str, reference: str, answer_a: str, answer_b: str) -> dict:
-    client = get_client()
     prompt = (
         f"Question: {question}\n\nReference answer: {reference}\n\n"
         f"Answer A (GraphRAG):\n{answer_a}\n\nAnswer B (Vector RAG):\n{answer_b}"
     )
-    resp = client.messages.create(
-        model=config.JUDGE_MODEL, max_tokens=400,
-        system=JUDGE_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    raw = _strip_json_fences("".join(b.text for b in resp.content if b.type == "text"))
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        return {"score_a": 0, "score_b": 0, "rationale": raw[:300]}
+    data = chat_json(config.JUDGE_MODEL, JUDGE_SYSTEM_PROMPT, prompt, max_tokens=400)
+    if not data:
+        return {"score_a": 0, "score_b": 0, "rationale": "Judge model returned unparseable output."}
+    return data
 
 
 def run_benchmark() -> BenchmarkSummary:

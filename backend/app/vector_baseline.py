@@ -1,8 +1,13 @@
 """
-Vanilla vector-RAG baseline: chunk -> embed (Chroma's default embedding
-function) -> similarity search -> stuff top-k chunks into the prompt.
-No graph, no entities, no communities. This is what GraphRAG is benchmarked
-against.
+Vanilla vector-RAG baseline: chunk -> embed (Chroma's default local
+sentence-transformer embedding function) -> similarity search -> stuff
+top-k chunks into the prompt. No graph, no entities, no communities. This
+is what GraphRAG is benchmarked against.
+
+Note: Chroma's default embedding function downloads a small ONNX model
+(all-MiniLM-L6-v2, ~80MB) from Hugging Face the first time it runs, then
+caches it locally under ~/.cache/chroma/. After that first run, everything
+here is fully offline, same as the Ollama-backed generation.
 """
 from __future__ import annotations
 from typing import List
@@ -10,7 +15,8 @@ from typing import List
 import chromadb
 
 from . import config
-from .extraction import chunk_text, get_client
+from .extraction import chunk_text
+from .ollama_client import chat
 from .models import Citation, QueryResponse
 
 _client = None
@@ -70,13 +76,11 @@ def answer_question(question: str, top_k: int = config.VECTOR_TOP_K) -> QueryRes
     context = "\n\n".join(
         f"[{ids[i]} | doc_id={metas[i]['doc_id']}]\n{docs[i]}" for i in range(len(docs))
     )
-    client = get_client()
-    resp = client.messages.create(
-        model=config.ANSWER_MODEL, max_tokens=800,
-        system=ANSWER_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": f"Retrieved passages:\n{context}\n\nQuestion: {question}"}],
+    answer = chat(
+        config.ANSWER_MODEL, ANSWER_SYSTEM_PROMPT,
+        f"Retrieved passages:\n{context}\n\nQuestion: {question}",
+        max_tokens=800, temperature=0.2,
     )
-    answer = "".join(b.text for b in resp.content if b.type == "text")
     citations = [Citation(doc_id=metas[i]["doc_id"], chunk_id=ids[i], snippet=docs[i][:300])
                  for i in range(len(docs))]
     return QueryResponse(question=question, mode_used="local", answer=answer, citations=citations)

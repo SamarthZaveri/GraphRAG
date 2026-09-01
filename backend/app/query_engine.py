@@ -12,15 +12,14 @@ given question it decides whether to do
     "summarize the key risks across all filings" that no single chunk answers.
 """
 from __future__ import annotations
-import json
 from difflib import SequenceMatcher
 from typing import List, Tuple
 
 from . import config
 from .community import load_summaries
-from .extraction import get_client, _strip_json_fences
+from .ollama_client import chat, chat_json
 from .graph_store import GraphStore
-from .models import Citation, QueryResponse, CommunitySummary
+from .models import Citation, QueryResponse
 
 
 ROUTER_SYSTEM_PROMPT = """Classify a question about a set of contracts/financial filings as \
@@ -37,23 +36,16 @@ either "local" or "global":
 Also extract up to 4 key entity names mentioned or implied in the question (for local search \
 seeding), even if you classify it as global.
 
-Return ONLY JSON: {"mode": "local"|"global", "entities": [str, ...]}
+Return ONLY JSON, no preamble: {"mode": "local"|"global", "entities": [str, ...]}
 """
 
 
 def route_question(question: str) -> Tuple[str, List[str]]:
-    client = get_client()
-    resp = client.messages.create(
-        model=config.EXTRACTION_MODEL, max_tokens=300,
-        system=ROUTER_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": question}],
-    )
-    raw = _strip_json_fences("".join(b.text for b in resp.content if b.type == "text"))
-    try:
-        data = json.loads(raw)
-        return data.get("mode", "global"), data.get("entities", [])
-    except json.JSONDecodeError:
-        return "global", []
+    data = chat_json(config.EXTRACTION_MODEL, ROUTER_SYSTEM_PROMPT, question, max_tokens=250)
+    mode = data.get("mode", "global")
+    if mode not in ("local", "global"):
+        mode = "global"
+    return mode, data.get("entities", []) or []
 
 
 def _fuzzy_match_nodes(names: List[str], store: GraphStore, top_n: int = 4) -> List[str]:
@@ -121,17 +113,15 @@ def answer_local(question: str) -> QueryResponse:
     if store is None or store.graph.number_of_nodes() == 0:
         return QueryResponse(question=question, mode_used="local",
                               answer="No documents have been ingested yet.", citations=[])
-    mode, seed_entities = route_question(question)
+    _, seed_entities = route_question(question)
     seeds, visited, node_lines, facts, citations = _local_context(question, store, seed_entities)
 
     context = "ENTITIES:\n" + "\n".join(node_lines) + "\n\nFACTS:\n" + "\n".join(facts)
-    client = get_client()
-    resp = client.messages.create(
-        model=config.ANSWER_MODEL, max_tokens=800,
-        system=ANSWER_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": f"Context from knowledge graph:\n{context}\n\nQuestion: {question}"}],
+    answer = chat(
+        config.ANSWER_MODEL, ANSWER_SYSTEM_PROMPT,
+        f"Context from knowledge graph:\n{context}\n\nQuestion: {question}",
+        max_tokens=800, temperature=0.2,
     )
-    answer = "".join(b.text for b in resp.content if b.type == "text")
     return QueryResponse(question=question, mode_used="local", answer=answer,
                           citations=citations, graph_path=visited[:20])
 
@@ -145,13 +135,11 @@ def answer_global(question: str) -> QueryResponse:
     context = "\n\n".join(
         f"[Community: {s.title}] (members: {', '.join(s.members[:8])})\n{s.summary}" for s in summaries
     )
-    client = get_client()
-    resp = client.messages.create(
-        model=config.ANSWER_MODEL, max_tokens=900,
-        system=ANSWER_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": f"Community summaries:\n{context}\n\nQuestion: {question}"}],
+    answer = chat(
+        config.ANSWER_MODEL, ANSWER_SYSTEM_PROMPT,
+        f"Community summaries:\n{context}\n\nQuestion: {question}",
+        max_tokens=900, temperature=0.2,
     )
-    answer = "".join(b.text for b in resp.content if b.type == "text")
     citations = [Citation(doc_id=s.title, chunk_id=f"community_{s.community_id}", snippet=s.summary[:300])
                  for s in summaries]
     return QueryResponse(question=question, mode_used="global", answer=answer, citations=citations)

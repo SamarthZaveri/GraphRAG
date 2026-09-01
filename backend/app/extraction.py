@@ -1,29 +1,13 @@
 """
 Ingestion: chunk raw document text and extract (entity, relation, entity)
-triples from each chunk using the Anthropic API with a strict JSON schema.
+triples from each chunk using a local Ollama model with a strict JSON schema.
 """
 from __future__ import annotations
-import json
-import re
 from typing import List
 
-from anthropic import Anthropic
-
 from . import config
+from .ollama_client import chat_json
 from .models import ExtractionResult, Entity, Triple
-
-_client: Anthropic | None = None
-
-
-def get_client() -> Anthropic:
-    global _client
-    if _client is None:
-        if not config.ANTHROPIC_API_KEY:
-            raise RuntimeError(
-                "ANTHROPIC_API_KEY is not set. Export it before starting the server."
-            )
-        _client = Anthropic(api_key=config.ANTHROPIC_API_KEY)
-    return _client
 
 
 def chunk_text(text: str, doc_id: str, size: int = config.CHUNK_SIZE_CHARS,
@@ -79,7 +63,7 @@ Rules:
 - Every triple must include a short "evidence" string (<= 25 words) paraphrased from the text \
   supporting it — do not copy long verbatim spans.
 - Only extract what is actually supported by the text. Do not invent facts.
-- Return ONLY valid JSON matching this schema, nothing else, no markdown fences:
+- Return ONLY valid JSON matching this schema, nothing else, no markdown fences, no preamble:
 
 {
   "entities": [{"name": str, "type": str, "description": str}],
@@ -88,34 +72,15 @@ Rules:
 """
 
 
-def _strip_json_fences(text: str) -> str:
-    text = text.strip()
-    text = re.sub(r"^```(json)?", "", text).strip()
-    text = re.sub(r"```$", "", text).strip()
-    return text
-
-
 def extract_from_chunk(chunk: dict) -> ExtractionResult:
-    client = get_client()
-    resp = client.messages.create(
-        model=config.EXTRACTION_MODEL,
-        max_tokens=2000,
-        system=EXTRACTION_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": chunk["text"]}],
+    data = chat_json(
+        config.EXTRACTION_MODEL, EXTRACTION_SYSTEM_PROMPT, chunk["text"], max_tokens=1500,
     )
-    raw = "".join(b.text for b in resp.content if b.type == "text")
-    raw = _strip_json_fences(raw)
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        # best-effort recovery: grab the first {...} block
-        match = re.search(r"\{.*\}", raw, re.DOTALL)
-        data = json.loads(match.group(0)) if match else {"entities": [], "triples": []}
 
     entities = [
         Entity(name=e["name"], type=e.get("type", "Other"), description=e.get("description"),
                source_docs=[chunk["doc_id"]])
-        for e in data.get("entities", []) if e.get("name")
+        for e in data.get("entities", []) if isinstance(e, dict) and e.get("name")
     ]
     triples = [
         Triple(
@@ -124,7 +89,7 @@ def extract_from_chunk(chunk: dict) -> ExtractionResult:
             evidence=t.get("evidence", ""),
         )
         for t in data.get("triples", [])
-        if t.get("subject") and t.get("predicate") and t.get("object")
+        if isinstance(t, dict) and t.get("subject") and t.get("predicate") and t.get("object")
     ]
     return ExtractionResult(
         doc_id=chunk["doc_id"], chunk_id=chunk["chunk_id"],
