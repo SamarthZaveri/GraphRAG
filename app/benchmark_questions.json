@@ -1,0 +1,74 @@
+[
+  {
+    "id": "q1",
+    "category": "local",
+    "question": "Under the engagement letter, what monthly retainer fee is Liberty Star required to pay MLV, and what is the minimum cash portion?",
+    "reference_answer": "A $20,000/month retainer, of which a minimum of $10,000/month must be paid in cash, with the remainder payable in Liberty Star common shares."
+  },
+  {
+    "id": "q2",
+    "category": "local",
+    "question": "Who signed the Sponsor Support Agreement on behalf of each of the three parties, and what is each signatory's title?",
+    "reference_answer": "Benoit Sansoucy, Manager, signed for SDCL EDGE Sponsor LLC (Sponsor). Ned Davis, Chief Financial Officer, signed for SDCL EDGE Acquisition Corporation (Acquiror). Jonathan Maxwell, Director, signed for Specialty Copper Listco Plc (PubCo)."
+  },
+  {
+    "id": "q3",
+    "category": "local",
+    "question": "What percentage of the combined company is KME Group expected to own after the cunova/SEDA business combination closes?",
+    "reference_answer": "KME Group is expected to own approximately 60.1% of the combined company; existing SEDA shareholders and other investors are expected to own approximately 39.9%."
+  },
+  {
+    "id": "q4",
+    "category": "local",
+    "question": "Per the engagement letter's fee schedule, what Success Fee would MLV earn on a $27,000,000 Strategic Event, and how is that figure calculated?",
+    "reference_answer": "$990,000 total: 5% of the first $10,000,000 ($500,000), 3% of the next $15,000,000 slice up to $25,000,000 ($450,000 — note the letter's own worked example applies 3% to $15,000,000 of the $10-25M band), and 2% of the remaining $2,000,000 ($40,000)."
+  },
+  {
+    "id": "q5",
+    "category": "global",
+    "question": "Compare the governing-law provisions across all three documents in the corpus.",
+    "reference_answer": "The Sponsor Support Agreement is governed by Delaware law. The MLV/Liberty Star engagement letter is governed by New York law. The cunova/SEDA press release is a press release, not a contract, and does not specify a governing law."
+  },
+  {
+    "id": "q6",
+    "category": "global",
+    "question": "Summarize all monetary obligations and figures described across the three documents.",
+    "reference_answer": "Sponsor Support Agreement: a $1,200,000 promissory note and a $1,392,928 funding/promissory note between Acquiror (debtor) and Sponsor (creditor). Press release: proposed business combination enterprise value ~US$736 million (net debt $289M, equity value ~$447M), valuing cunova/KME Aerospace at ~9.4x 2023 Adjusted EBITDA of $78 million, with a $140 million minimum cash closing condition. Engagement letter: $20,000/month retainer (min $10,000 cash), Success Fee tiers of 5%/3%/2% on Transaction Value bands, and a 7% placement/underwriting fee on securities offerings."
+  },
+  {
+    "id": "q7",
+    "category": "global",
+    "question": "Which named entities/people appear in more than one document, and what is their role in each?",
+    "reference_answer": "cunova, SEDA (SDCL EDGE Acquisition Corporation), KME Group, and Paragon all appear in both the Sponsor Support Agreement and the press release, in consistent roles (e.g. SEDA as Acquiror/SPAC, KME Group as prospective majority shareholder). Jonathan Maxwell appears in both as Director signatory of PubCo on the Sponsor Support Agreement and as Chairman/Co-CEO of SEDA quoted in the press release. The engagement letter's parties (Liberty Star, MLV, James Briscoe) do not appear in the other two documents — it is an unrelated deal."
+  },
+  {
+    "id": "q8",
+    "category": "multi_hop",
+    "question": "What obligations does the Sponsor have regarding the SEDA Class B Shares before the Expiration Time, and what earlier agreement (referenced within the Sponsor Support Agreement) does the Sponsor also have to comply with?",
+    "reference_answer": "Before the Expiration Time, the Sponsor may not sell, transfer, pledge or otherwise dispose of its Sponsor SEDA Class B Shares (with limited exceptions for the Founder Shares Conversion and affiliate transfers). The Sponsor must also comply with a separate Letter Agreement dated October 28, 2021, including not redeeming any SEDA Shares in connection with the business combination."
+  },
+  {
+    "id": "q9",
+    "category": "multi_hop",
+    "question": "What is the combined total of the two promissory notes between the Sponsor and Acquiror described in the Sponsor Support Agreement, and how does that compare in scale to the overall enterprise value of the proposed business combination reported in the press release?",
+    "reference_answer": "The two promissory notes total $2,592,928 ($1,200,000 + $1,392,928). This is a very small fraction (roughly 0.35%) of the proposed business combination's approximate $736 million enterprise value reported in the press release."
+  },
+  {
+    "id": "q10",
+    "category": "multi_hop",
+    "question": "Per the Sponsor Support Agreement, who is designated a third-party beneficiary, and of which section, and what does that section require of the Sponsor?",
+    "reference_answer": "PP S&C Holding GmbH is designated a third-party beneficiary of Section 1.5, with the right to enforce it. Section 1.5 requires the Sponsor to appear at and vote (or execute written consents covering) its SEDA Shares and SEDA Warrants at shareholder meetings in favor of the business-combination proposals and against competing or disruptive proposals."
+  },
+  {
+    "id": "q11",
+    "category": "conflict",
+    "question": "Does the termination provision in the Sponsor Support Agreement conflict with the termination provision in the MLV/Liberty Star engagement letter?",
+    "reference_answer": "No direct conflict — they are unrelated agreements involving entirely different parties and deals. They do differ in structure: the Sponsor Support Agreement terminates on the earlier of the Merger's Expiration Time, Acquiror's liquidation, or written agreement of all three parties, while the engagement letter allows either party to terminate on 30 days' notice (with the Company unable to terminate before 4 months) or immediately for Cause."
+  },
+  {
+    "id": "q12",
+    "category": "conflict",
+    "question": "Is there any inconsistency in how Jonathan Maxwell's title/role is described between the Sponsor Support Agreement and the press release?",
+    "reference_answer": "Yes, a mild inconsistency: the Sponsor Support Agreement signature block lists Jonathan Maxwell as 'Director' of PubCo (Specialty Copper Listco Plc), while the press release quotes him as 'Chairman and Co-CEO of SEDA' (SDCL EDGE Acquisition Corporation) — different titles at different entities, which is plausible (he may hold both roles) but the documents don't reconcile it, so it should be flagged rather than assumed identical."
+  }
+]
