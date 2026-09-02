@@ -38,9 +38,9 @@ OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 # One model is enough, but you can point each stage at a different local
 # model if you've pulled more than one (e.g. a small model for the
 # high-volume extraction pass, a bigger one for final answers/judging).
-EXTRACTION_MODEL = os.environ.get("LEDGER_EXTRACTION_MODEL", "llama3.1")
-ANSWER_MODEL = os.environ.get("LEDGER_ANSWER_MODEL", "llama3.1")
-JUDGE_MODEL = os.environ.get("LEDGER_JUDGE_MODEL", "llama3.1")
+EXTRACTION_MODEL = os.environ.get("LEDGER_EXTRACTION_MODEL", "qwen2.5:3b-instruct")
+ANSWER_MODEL = os.environ.get("LEDGER_ANSWER_MODEL", "qwen2.5:3b-instruct")
+JUDGE_MODEL = os.environ.get("LEDGER_JUDGE_MODEL", "qwen2.5:7b-instruct")
 
 OLLAMA_REQUEST_TIMEOUT = int(os.environ.get("LEDGER_OLLAMA_TIMEOUT", "180"))
 

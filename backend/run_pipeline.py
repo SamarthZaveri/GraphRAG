@@ -5,8 +5,8 @@ community summaries, run the benchmark, and print a report. Useful for a
 quick end-to-end sanity check without starting the FastAPI server / frontend.
 
 Usage:
-    ollama serve                     # if not already running
-    ollama pull llama3.1             # once
+    ollama serve                          # if not already running
+    ollama pull qwen2.5:3b-instruct       # once
     python run_pipeline.py
 """
 import sys
@@ -15,7 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from app import config, ollama_client
+from app import config, ollama_client, rgcn
 from app.extraction import extract_document, chunk_text
 from app.graph_store import reset_store
 from app.community import build_community_summaries, save_summaries
@@ -60,6 +60,14 @@ def main():
     for s in summaries:
         print(f"   [{s.title}] members: {', '.join(s.members[:6])}")
     print()
+
+    print("-- Training R-GCN node embeddings ...")
+    rgcn_result = rgcn.train_and_save(store.graph)
+    if rgcn_result:
+        print(f"   trained on {rgcn_result['num_nodes']} nodes / {rgcn_result['num_edges']} edges, "
+              f"final loss {rgcn_result['final_loss']:.4f}\n")
+    else:
+        print("   skipped (torch not installed, or graph too small)\n")
 
     print("-- Running benchmark (GraphRAG vs vector RAG) ...")
     summary = benchmark.run_benchmark()

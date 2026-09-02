@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import List
 
 import chromadb
+from chromadb.config import Settings
 
 from . import config
 from .extraction import chunk_text
@@ -27,7 +28,10 @@ COLLECTION_NAME = "ledger_vector_baseline"
 def get_collection():
     global _client, _collection
     if _client is None:
-        _client = chromadb.PersistentClient(path=str(config.CHROMA_DIR))
+        _client = chromadb.PersistentClient(
+            path=str(config.CHROMA_DIR),
+            settings=Settings(anonymized_telemetry=False),
+        )
     if _collection is None:
         _collection = _client.get_or_create_collection(COLLECTION_NAME)
     return _collection
@@ -59,7 +63,8 @@ def ingest_document(doc_id: str, text: str):
 
 ANSWER_SYSTEM_PROMPT = """You are a plain vector-RAG assistant. Answer the question using ONLY \
 the retrieved passages below. If they don't contain the answer, say so. Cite the doc_id for \
-each claim."""
+each claim. If a passage already states a percentage, growth rate, or comparison, quote that \
+stated figure directly rather than recomputing it yourself."""
 
 
 def answer_question(question: str, top_k: int = config.VECTOR_TOP_K) -> QueryResponse:

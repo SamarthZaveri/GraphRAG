@@ -1,24 +1,22 @@
 from __future__ import annotations
-import time
 import traceback
 from pathlib import Path
 from typing import List
 
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 
 from . import config
 from .extraction import extract_document, chunk_text
-from .graph_store import GraphStore, reset_store
+from .graph_store import GraphStore, reset_store, get_store
 from .community import build_community_summaries, save_summaries, load_summaries
 from .models import (
     IngestResponse, QueryRequest, QueryResponse, CompareResponse,
     BenchmarkSummary,
 )
-from . import query_engine, vector_baseline, benchmark, ollama_client
+from . import query_engine, vector_baseline, benchmark, ollama_client, rgcn
 
-app = FastAPI(title="Ledger — GraphRAG for Contracts")
+app = FastAPI(title="Ledger — GraphRAG for Financial Reports")
 
 app.add_middleware(
     CORSMiddleware,
@@ -37,31 +35,47 @@ def _read_text_file(path: Path) -> str:
     return path.read_text(errors="ignore")
 
 
-def _ingest_documents(doc_paths: List[Path]) -> IngestResponse:
-    store = reset_store()
-    vector_baseline.reset_collection()
+def _ingest_documents(doc_paths: List[Path], mode: str = "replace") -> IngestResponse:
+    """mode="replace" wipes the existing graph/vector store and rebuilds from
+    just doc_paths. mode="add" loads the existing store and merges doc_paths
+    into it (skipping any doc_id already ingested, for idempotency), then
+    re-runs community detection and R-GCN training over the *whole* merged
+    graph — those are cheap; only the LLM extraction pass is skipped for
+    already-ingested docs."""
+    if mode == "replace":
+        store = reset_store()
+        vector_baseline.reset_collection()
+        already_ingested = set()
+    else:
+        store = get_store()
+        vector_baseline.get_collection()
+        already_ingested = store.ingested_doc_ids()
 
-    total_entities, total_triples = 0, 0
+    total_triples = 0
     doc_ids = []
     for path in doc_paths:
         doc_id = path.stem
         doc_ids.append(doc_id)
+        if doc_id in already_ingested:
+            continue  # already in the graph from a previous "add" — skip re-extraction
         text = _read_text_file(path)
 
-        # GraphRAG side: chunk + extract + add to graph
         chunks = chunk_text(text, doc_id)
         extraction_results = extract_document(doc_id, text)
         store.ingest_document_chunks(doc_id, chunks, extraction_results)
-        total_entities += sum(len(r.entities) for r in extraction_results)
         total_triples += sum(len(r.triples) for r in extraction_results)
 
-        # Vector baseline side
         vector_baseline.ingest_document(doc_id, text)
 
     store.save()
 
     summaries = build_community_summaries(store)
     save_summaries(summaries)
+
+    try:
+        rgcn.train_and_save(store.graph)
+    except Exception:
+        traceback.print_exc()  # R-GCN is a retrieval enhancement, not load-bearing — don't fail ingestion
 
     return IngestResponse(
         doc_ids=doc_ids,
@@ -78,13 +92,13 @@ def status():
     summaries = load_summaries()
     sample_docs = sorted(p.stem for p in config.SAMPLE_DOCS_DIR.glob("*.txt"))
     ollama_up = ollama_client.is_available()
+    rgcn_state = rgcn.load_embeddings()
     return {
         "ingested": store is not None and store.graph.number_of_nodes() > 0,
         "num_nodes": store.graph.number_of_nodes() if store else 0,
         "num_edges": store.graph.number_of_edges() if store else 0,
         "num_communities": len(summaries),
-        "doc_ids": sorted({d for n in (store.graph.nodes(data=True) if store else [])
-                            for d in n[1].get("source_docs", [])}),
+        "doc_ids": sorted(store.ingested_doc_ids()) if store else [],
         "sample_docs_available": sample_docs,
         "ollama_available": ollama_up,
         "ollama_models": ollama_client.list_models() if ollama_up else [],
@@ -94,6 +108,9 @@ def status():
             "answer": config.ANSWER_MODEL,
             "judge": config.JUDGE_MODEL,
         },
+        "rgcn_available": rgcn.TORCH_AVAILABLE,
+        "rgcn_trained": rgcn_state is not None,
+        "rgcn_num_nodes": rgcn_state[1].shape[0] if rgcn_state else 0,
     }
 
 
@@ -106,14 +123,16 @@ def ingest_sample():
     if not paths:
         raise HTTPException(404, "No sample documents found.")
     try:
-        return _ingest_documents(paths)
+        return _ingest_documents(paths, mode="replace")
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(500, f"Ingestion failed: {e}")
 
 
 @app.post("/api/ingest/upload", response_model=IngestResponse)
-async def ingest_upload(files: List[UploadFile] = File(...)):
+async def ingest_upload(files: List[UploadFile] = File(...), mode: str = Form("add")):
+    if mode not in ("add", "replace"):
+        raise HTTPException(400, "mode must be 'add' or 'replace'")
     if not ollama_client.is_available():
         raise HTTPException(400, f"Can't reach Ollama at {config.OLLAMA_HOST}. Run `ollama serve` "
                                   f"and `ollama pull {config.EXTRACTION_MODEL}` first.")
@@ -125,7 +144,7 @@ async def ingest_upload(files: List[UploadFile] = File(...)):
         dest.write_bytes(content)
         saved_paths.append(dest)
     try:
-        return _ingest_documents(saved_paths)
+        return _ingest_documents(saved_paths, mode=mode)
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(500, f"Ingestion failed: {e}")
