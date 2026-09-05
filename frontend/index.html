@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Ledger — GraphRAG for Contracts</title>
+<title>Ledger — GraphRAG for Financial Reports</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600;8..60,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -75,6 +75,15 @@ textarea, select, input { font-family: var(--sans); }
 .upload-label { display: block; margin-top: 6px; cursor: pointer; }
 .link-btn { color: var(--text-faint); font-size: 12.5px; text-decoration: underline; text-decoration-color: var(--border); text-underline-offset: 3px; }
 .link-btn:hover { color: var(--emerald); }
+.dropzone { margin-top: 10px; border: 1.5px dashed var(--border); border-radius: 6px; padding: 16px 12px; text-align: center; color: var(--text-faint); font-size: 12.5px; transition: border-color .15s, background .15s, color .15s; cursor: pointer; }
+.dropzone:hover, .dropzone.dragover { border-color: var(--emerald); color: var(--text-dim); background: var(--panel); }
+.dropzone.dragover { background: var(--emerald-dim); border-style: solid; }
+.dropzone .dz-icon { font-size: 20px; display: block; margin-bottom: 4px; }
+.mode-toggle { display: flex; gap: 6px; margin-top: 10px; font-size: 12px; }
+.mode-toggle label { display: flex; align-items: center; gap: 5px; color: var(--text-dim); cursor: pointer; }
+.rgcn-badge { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--text-faint); margin-top: 8px; }
+.rgcn-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--border); flex-shrink: 0; }
+.rgcn-dot.on { background: var(--emerald); }
 .sidebar-footer { margin-top: auto; padding-top: 22px; color: var(--text-faint); font-size: 12px; line-height: 1.6; }
 .main { overflow-y: auto; padding: 30px 40px; }
 .empty-state { display: flex; flex-direction: column; align-items: flex-start; justify-content: center; height: 60vh; max-width: 480px; color: var(--text-dim); }
@@ -138,7 +147,7 @@ table.bench-table th { color: var(--text-faint); font-weight: 500; font-size: 12
       <div class="brand-mark">L</div>
       <div>
         <h1>Ledger</h1>
-        <p class="tagline">GraphRAG for contracts &amp; filings</p>
+        <p class="tagline">GraphRAG for financial reports</p>
       </div>
     </div>
 
@@ -158,7 +167,7 @@ table.bench-table th { color: var(--text-faint); font-weight: 500; font-size: 12
     </div>
 
     <div class="sidebar-footer">
-      <p>Local search walks the graph around specific entities. Global search reads across community summaries. The benchmark scores both against a vanilla vector-RAG baseline on the same questions. Runs fully offline via a local Ollama model — no API key, nothing leaves your machine.</p>
+      <p>Local search walks 2 hops of the graph plus R-GCN-nearest entities, grounded in the original source text. Global search reads the community summaries most relevant to your question. The benchmark scores both against a vanilla vector-RAG baseline. Runs fully offline via a local Ollama model — no API key, nothing leaves your machine.</p>
     </div>
   </aside>
 
@@ -173,7 +182,7 @@ table.bench-table th { color: var(--text-faint); font-weight: 500; font-size: 12
 <script>
 const API_BASE = (localStorage.getItem('ledger_api_base') || 'http://localhost:8000') + '/api';
 
-const state = { status: null, ingesting: false, tab: 'graph', network: null };
+const state = { status: null, ingesting: false, tab: 'graph', network: null, ingestMode: 'add' };
 
 async function api(path, opts = {}) {
   const res = await fetch(API_BASE + path, opts);
@@ -222,7 +231,7 @@ function renderSidebar() {
   controlsEl.innerHTML = '';
   if (!s || !s.ingested) {
     controlsEl.appendChild(el(`<p class="dim-text">No documents ingested yet.</p>`));
-    const btn = el(`<button class="btn primary" id="ingest-sample-btn">${state.ingesting ? '<span class="spinner"></span> Ingesting…' : 'Ingest 3 sample SEC filings'}</button>`);
+    const btn = el(`<button class="btn primary" id="ingest-sample-btn">${state.ingesting ? '<span class="spinner"></span> Ingesting…' : 'Ingest 3 sample earnings releases'}</button>`);
     btn.disabled = state.ingesting;
     btn.onclick = handleIngestSample;
     controlsEl.appendChild(btn);
@@ -236,17 +245,57 @@ function renderSidebar() {
     const pills = el('<div class="doc-pills"></div>');
     (s.doc_ids || []).forEach(d => pills.appendChild(el(`<span class="pill doc">${escapeHtml(d)}</span>`)));
     controlsEl.appendChild(pills);
+
+    const rgcnOn = s.rgcn_available && s.rgcn_trained;
+    controlsEl.appendChild(el(`<div class="rgcn-badge"><span class="rgcn-dot ${rgcnOn ? 'on' : ''}"></span>
+      ${s.rgcn_available
+        ? (rgcnOn ? `R-GCN embeddings trained (${s.rgcn_num_nodes} nodes)` : 'R-GCN not trained yet')
+        : 'R-GCN unavailable — install torch (pip install torch) for graph-embedding retrieval'}
+    </div>`));
   }
 
-  const uploadLabel = el(`<label class="upload-label">
+  // drag-and-drop upload zone
+  const dz = el(`<div class="dropzone" id="dropzone" tabindex="0">
+    <span class="dz-icon">⬆</span>
+    <span>${state.ingesting ? 'Ingesting…' : 'Drop .txt / .pdf files here, or click to browse'}</span>
     <input type="file" multiple accept=".txt,.pdf" id="upload-input" ${state.ingesting ? 'disabled' : ''} hidden>
-    <span class="link-btn">${s && s.ingested ? 'Re-ingest with your own files' : 'or upload your own .txt / .pdf files'}</span>
-  </label>`);
-  controlsEl.appendChild(uploadLabel);
-  document.getElementById('upload-input')?.addEventListener('change', handleUpload);
+  </div>`);
+  controlsEl.appendChild(dz);
+
+  if (s && s.ingested) {
+    controlsEl.appendChild(el(`<div class="mode-toggle">
+      <label><input type="radio" name="ingest-mode" value="add" ${state.ingestMode === 'add' ? 'checked' : ''}> Add to corpus</label>
+      <label><input type="radio" name="ingest-mode" value="replace" ${state.ingestMode === 'replace' ? 'checked' : ''}> Replace corpus</label>
+    </div>`));
+    controlsEl.querySelectorAll('input[name="ingest-mode"]').forEach(r => {
+      r.onchange = (e) => { state.ingestMode = e.target.value; };
+    });
+  }
+
+  wireDropzone();
 
   const errEl = document.getElementById('ingest-error');
   errEl.innerHTML = '';
+}
+
+function wireDropzone() {
+  const dz = document.getElementById('dropzone');
+  const input = document.getElementById('upload-input');
+  if (!dz || !input) return;
+  dz.addEventListener('click', () => input.click());
+  input.addEventListener('change', () => handleUpload(Array.from(input.files || [])));
+  ['dragenter', 'dragover'].forEach(evt => dz.addEventListener(evt, (e) => {
+    e.preventDefault(); e.stopPropagation(); dz.classList.add('dragover');
+  }));
+  ['dragleave', 'drop'].forEach(evt => dz.addEventListener(evt, (e) => {
+    e.preventDefault(); e.stopPropagation(); dz.classList.remove('dragover');
+  }));
+  dz.addEventListener('drop', (e) => {
+    const files = Array.from(e.dataTransfer.files || []).filter(
+      f => /\.(txt|pdf)$/i.test(f.name)
+    );
+    if (files.length) handleUpload(files);
+  });
 }
 
 async function handleIngestSample() {
@@ -267,15 +316,15 @@ async function handleIngestSample() {
   }
 }
 
-async function handleUpload(ev) {
-  const files = Array.from(ev.target.files || []);
-  if (files.length === 0) return;
+async function handleUpload(files) {
+  if (!files || files.length === 0) return;
   state.ingesting = true;
   document.getElementById('ingest-error').innerHTML = '';
   document.getElementById('ingest-log').innerHTML = '';
   renderSidebar();
   const form = new FormData();
   files.forEach(f => form.append('files', f));
+  form.append('mode', state.ingestMode || 'add');
   try {
     const res = await api('/ingest/upload', { method: 'POST', body: form });
     document.getElementById('ingest-log').innerHTML =
@@ -315,14 +364,14 @@ function emptyState(title, body) {
 /* ---------------- graph tab ---------------- */
 
 const TYPE_COLORS = {
-  Party: '#4a9c78', Agreement: '#cf9f2e', Money: '#c06356', Date: '#6c8ebf',
-  Property: '#9c6dd4', Obligation: '#d4884a', Role: '#5ba3a3', Location: '#7a8599', Other: '#8a93a3',
+  Company: '#4a9c78', Metric: '#cf9f2e', Period: '#6c8ebf', Segment: '#9c6dd4',
+  Person: '#5ba3a3', RiskFactor: '#c06356', Guidance: '#d4884a', Other: '#8a93a3',
 };
 
 async function renderGraphTab() {
   const container = document.getElementById('tab-graph');
   if (!state.status || !state.status.ingested) {
-    container.innerHTML = emptyState('No graph yet', 'Ingest the sample SEC filings (or your own documents) from the sidebar to build the knowledge graph.');
+    container.innerHTML = emptyState('No graph yet', 'Ingest the sample earnings releases (or your own financial reports) from the sidebar to build the knowledge graph.');
     return;
   }
   container.innerHTML = `
@@ -374,10 +423,10 @@ async function renderGraphTab() {
 /* ---------------- ask tab ---------------- */
 
 const SAMPLE_QUESTIONS = [
-  "What percentage of the combined company will KME Group own?",
-  "Compare the governing-law provisions across all three documents.",
-  "What obligations does the Sponsor have regarding the SEDA Class B Shares?",
-  "Which entities appear in more than one document?",
+  "Compare year-over-year revenue growth across all three companies.",
+  "What was Five9's stock-based compensation vs. its GAAP net income in Q2 2025?",
+  "How did MaxLinear's operating expenses change from Q1 to Q2 2025?",
+  "Which companies improved profitability year-over-year?",
 ];
 
 function renderAskTab() {
@@ -393,7 +442,7 @@ function renderAskTab() {
     </div>
     <div class="sample-qs">${SAMPLE_QUESTIONS.map(q => `<button class="sample-q" data-q="${escapeHtml(q)}">${escapeHtml(q)}</button>`).join('')}</div>
     <div class="ask-form">
-      <textarea id="ask-input" placeholder="Ask a question about the ingested contracts…"></textarea>
+      <textarea id="ask-input" placeholder="Ask a question about the ingested financial reports…"></textarea>
       <button class="btn primary" id="ask-btn">Ask</button>
     </div>
     <div class="ask-controls">

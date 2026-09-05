@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from . import config
 from .extraction import extract_document, chunk_text
 from .graph_store import GraphStore, reset_store, get_store
-from .community import build_community_summaries, save_summaries, load_summaries
+from .community import build_community_summaries, save_summaries, load_summaries, load_modularity
 from .models import (
     IngestResponse, QueryRequest, QueryResponse, CompareResponse,
     BenchmarkSummary,
@@ -93,6 +93,8 @@ def status():
     sample_docs = sorted(p.stem for p in config.SAMPLE_DOCS_DIR.glob("*.txt"))
     ollama_up = ollama_client.is_available()
     rgcn_state = rgcn.load_embeddings()
+    rgcn_metrics = rgcn.load_metrics()
+    modularity_info = load_modularity()
     return {
         "ingested": store is not None and store.graph.number_of_nodes() > 0,
         "num_nodes": store.graph.number_of_nodes() if store else 0,
@@ -111,6 +113,9 @@ def status():
         "rgcn_available": rgcn.TORCH_AVAILABLE,
         "rgcn_trained": rgcn_state is not None,
         "rgcn_num_nodes": rgcn_state[1].shape[0] if rgcn_state else 0,
+        "rgcn_val_auc": rgcn_metrics.get("val_auc") if rgcn_metrics else None,
+        "rgcn_used_semantic_init": rgcn_metrics.get("used_semantic_init") if rgcn_metrics else None,
+        "community_modularity": modularity_info.get("modularity"),
     }
 
 
