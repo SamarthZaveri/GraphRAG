@@ -7,14 +7,14 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import config
-from .extraction import extract_document, chunk_text
+from .extraction import extract_document
 from .graph_store import GraphStore, reset_store, get_store
 from .community import build_community_summaries, save_summaries, load_summaries, load_modularity
 from .models import (
     IngestResponse, QueryRequest, QueryResponse, CompareResponse,
     BenchmarkSummary,
 )
-from . import query_engine, vector_baseline, benchmark, ollama_client, rgcn
+from . import query_engine, vector_baseline, benchmark, ollama_client, rgcn, corpus_router
 
 app = FastAPI(title="Ledger — GraphRAG for Financial Reports")
 
@@ -60,8 +60,9 @@ def _ingest_documents(doc_paths: List[Path], mode: str = "replace") -> IngestRes
             continue  # already in the graph from a previous "add" — skip re-extraction
         text = _read_text_file(path)
 
-        chunks = chunk_text(text, doc_id)
-        extraction_results = extract_document(doc_id, text)
+        # Table-aware extraction: deterministic table facts + concurrent LLM
+        # extraction over the remaining prose (see extraction.py / table_parser.py)
+        chunks, extraction_results = extract_document(doc_id, text)
         store.ingest_document_chunks(doc_id, chunks, extraction_results)
         total_triples += sum(len(r.triples) for r in extraction_results)
 
@@ -76,6 +77,11 @@ def _ingest_documents(doc_paths: List[Path], mode: str = "replace") -> IngestRes
         rgcn.train_and_save(store.graph)
     except Exception:
         traceback.print_exc()  # R-GCN is a retrieval enhancement, not load-bearing — don't fail ingestion
+
+    try:
+        corpus_router.analyze_corpus()
+    except Exception:
+        traceback.print_exc()  # router recommendation isn't load-bearing either
 
     return IngestResponse(
         doc_ids=doc_ids,
@@ -178,10 +184,36 @@ def get_communities():
     return [s.model_dump() for s in load_summaries()]
 
 
+@app.get("/api/corpus-analysis")
+def get_corpus_analysis():
+    analysis = corpus_router.load_analysis()
+    if analysis is None:
+        return corpus_router.analyze_corpus()
+    return analysis
+
+
 @app.post("/api/query", response_model=QueryResponse)
 def query(req: QueryRequest):
+    """Single-answer query for the Ask tab. engine="auto" defers to the
+    corpus-health router's recommendation; "graphrag"/"vector_rag" force a
+    manual choice. This routing does NOT apply to /api/query/compare, which
+    always runs both engines by design."""
     try:
-        return query_engine.answer_question(req.question, mode=req.mode)
+        engine = req.engine
+        reason = None
+        if engine == "auto":
+            analysis = corpus_router.load_analysis() or corpus_router.analyze_corpus()
+            engine = analysis.get("recommended_engine", "graphrag")
+            reason = analysis.get("reason")
+
+        if engine == "vector_rag":
+            resp = vector_baseline.answer_question(req.question)
+        else:
+            resp = query_engine.answer_question(req.question, mode=req.mode)
+
+        resp.engine_used = engine
+        resp.engine_reason = reason
+        return resp
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(500, str(e))

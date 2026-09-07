@@ -10,58 +10,78 @@
 <script src="https://unpkg.com/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
 <style>
 :root {
-  --ink: #12161d; --ink-2: #171d26; --panel: #1a212b; --panel-2: #212a35;
-  --border: #2b3543; --border-soft: #232b36;
-  --text: #e9e6dc; --text-dim: #a8afbc; --text-faint: #6c7688;
-  --emerald: #4a9c78; --emerald-dim: #2f5c48;
-  --brass: #cf9f2e; --brass-dim: #7a611e;
-  --rose: #c06356; --rose-dim: #6b352d;
+  --ink: #10131a; --ink-2: #151a23; --panel: #1a2029; --panel-2: #212836;
+  --border: #2b3244; --border-soft: #212836;
+  --text: #e8e4d8; --text-dim: #a3aab8; --text-faint: #6b7387;
+  --brass: #c99c4a; --brass-dim: #6e5527; --brass-soft: #2c2517;
+  --rose: #c97363; --rose-dim: #6b352d;
+  --graph: #4a9c82; --graph-dim: #2c5c4c;
+  --vector: #6d93c9; --vector-dim: #35455e;
+  --shadow: 0 8px 24px rgba(0,0,0,.28);
   --serif: "Source Serif 4", Georgia, serif;
   --sans: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, sans-serif;
   --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace;
   color-scheme: dark;
 }
+:root[data-theme="light"] {
+  --ink: #faf8f2; --ink-2: #f2ede0; --panel: #ffffff; --panel-2: #f5f1e6;
+  --border: #ddd6c4; --border-soft: #e8e2d2;
+  --text: #23262c; --text-dim: #5b6270; --text-faint: #83806f;
+  --brass: #96702c; --brass-dim: #ecdfc0; --brass-soft: #f6efdc;
+  --rose: #a8493a; --rose-dim: #f6ddd7;
+  --graph: #2f7d68; --graph-dim: #d7ece5;
+  --vector: #3f66a0; --vector-dim: #dde6f2;
+  --shadow: 0 6px 18px rgba(90,80,50,.10);
+  color-scheme: light;
+}
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
-body { background: var(--ink); color: var(--text); font-family: var(--sans); font-size: 15px; line-height: 1.55; -webkit-font-smoothing: antialiased; }
+body { background: var(--ink); color: var(--text); font-family: var(--sans); font-size: 15px; line-height: 1.55; -webkit-font-smoothing: antialiased; transition: background .2s ease, color .2s ease; }
 h1, h2, h3, h4 { font-family: var(--serif); font-weight: 600; margin: 0; color: var(--text); }
 p { margin: 0 0 0.75em; }
-a { color: var(--emerald); }
+a { color: var(--brass); }
 button { font-family: var(--sans); cursor: pointer; }
 textarea, select, input { font-family: var(--sans); }
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 6px; }
+:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
 .mono { font-family: var(--mono); }
 
 .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 3px; font-size: 12.5px; font-family: var(--mono); border: 1px solid var(--border); color: var(--text-dim); background: var(--panel-2); }
 .pill.doc { color: var(--brass); border-color: var(--brass-dim); }
-.pill.emerald { color: var(--emerald); border-color: var(--emerald-dim); }
+.pill.emerald { color: var(--graph); border-color: var(--graph-dim); }
+.pill.vector { color: var(--vector); border-color: var(--vector-dim); }
 
-.btn { border: 1px solid var(--border); background: var(--panel-2); color: var(--text); padding: 9px 16px; border-radius: 4px; font-size: 14px; font-weight: 500; transition: border-color .15s, background .15s; }
-.btn:hover:not(:disabled) { border-color: var(--emerald); background: var(--ink-2); }
+.btn { border: 1px solid var(--border); background: var(--panel-2); color: var(--text); padding: 9px 16px; border-radius: 5px; font-size: 14px; font-weight: 500; transition: border-color .15s, background .15s; }
+.btn:hover:not(:disabled) { border-color: var(--brass); background: var(--panel); }
 .btn:disabled { opacity: .45; cursor: not-allowed; }
-.btn.primary { background: var(--emerald-dim); border-color: var(--emerald); color: #eafff2; }
-.btn.primary:hover:not(:disabled) { background: var(--emerald); }
+.btn.primary { background: var(--brass); border-color: var(--brass); color: var(--ink); font-weight: 600; }
+.btn.primary:hover:not(:disabled) { filter: brightness(1.08); }
 .btn.small { padding: 5px 10px; font-size: 12.5px; }
 
-.card { background: var(--panel); border: 1px solid var(--border-soft); border-radius: 6px; padding: 18px 20px; }
+.theme-toggle { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel); color: var(--text-dim); flex-shrink: 0; }
+.theme-toggle:hover { border-color: var(--brass); color: var(--text); }
+.theme-toggle svg { width: 16px; height: 16px; }
 
-.spinner { width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--emerald); border-radius: 50%; animation: spin .7s linear infinite; display: inline-block; vertical-align: -2px; margin-right: 6px; }
+.card { background: var(--panel); border: 1px solid var(--border-soft); border-radius: 8px; padding: 18px 20px; }
+
+.spinner { width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--brass); border-radius: 50%; animation: spin .7s linear infinite; display: inline-block; vertical-align: -2px; margin-right: 6px; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* layout */
 .shell { display: grid; grid-template-columns: 300px 1fr; height: 100vh; }
-.sidebar { background: var(--ink-2); border-right: 1px solid var(--border-soft); padding: 26px 22px; display: flex; flex-direction: column; overflow-y: auto; }
-.brand { display: flex; align-items: center; gap: 12px; margin-bottom: 30px; }
-.brand-mark { width: 38px; height: 38px; border-radius: 4px; background: linear-gradient(155deg, var(--emerald) 0%, var(--emerald-dim) 100%); color: #0e1712; font-family: var(--serif); font-weight: 700; font-size: 20px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.sidebar { background: var(--ink-2); border-right: 1px solid var(--border-soft); padding: 24px 22px; display: flex; flex-direction: column; overflow-y: auto; }
+.brand { display: flex; align-items: center; gap: 12px; margin-bottom: 26px; }
+.brand-mark { width: 38px; height: 38px; border-radius: 6px; background: linear-gradient(155deg, var(--brass) 0%, var(--brass-dim) 100%); color: var(--ink); font-family: var(--serif); font-weight: 700; font-size: 20px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.brand-text { flex: 1; min-width: 0; }
 .brand h1 { font-size: 21px; letter-spacing: .2px; }
 .tagline { color: var(--text-faint); font-size: 12.5px; margin: 2px 0 0; }
-.tabs { display: flex; flex-direction: column; gap: 3px; margin-bottom: 28px; }
-.tab-btn { text-align: left; background: transparent; border: none; color: var(--text-dim); font-size: 14.5px; padding: 9px 12px; border-radius: 5px; border-left: 2px solid transparent; }
+.tabs { display: flex; flex-direction: column; gap: 3px; margin-bottom: 26px; }
+.tab-btn { text-align: left; background: transparent; border: none; color: var(--text-dim); font-size: 14.5px; padding: 9px 12px; border-radius: 6px; border-left: 2px solid transparent; }
 .tab-btn:hover { background: var(--panel); color: var(--text); }
-.tab-btn.active { background: var(--panel); color: var(--text); border-left: 2px solid var(--emerald); font-weight: 500; }
-.sidebar-section { padding-top: 20px; border-top: 1px solid var(--border-soft); }
+.tab-btn.active { background: var(--panel); color: var(--text); border-left: 2px solid var(--brass); font-weight: 500; }
+.sidebar-section { padding-top: 18px; border-top: 1px solid var(--border-soft); }
 .sidebar-heading { font-size: 12px; color: var(--text-faint); font-weight: 500; margin-bottom: 10px; letter-spacing: .3px; }
 .dim-text { color: var(--text-dim); font-size: 13.5px; }
 .dim-text.small { font-size: 12.5px; margin-top: 10px; }
@@ -69,21 +89,21 @@ textarea, select, input { font-family: var(--sans); }
 .error-text { color: var(--rose); font-size: 12.5px; margin-top: 8px; }
 .stat-grid { display: flex; gap: 14px; margin-bottom: 12px; }
 .stat { display: flex; flex-direction: column; }
-.stat-num { font-family: var(--serif); font-size: 22px; font-weight: 600; color: var(--emerald); }
+.stat-num { font-family: var(--serif); font-size: 22px; font-weight: 600; color: var(--brass); }
 .stat-label { font-size: 11.5px; color: var(--text-faint); }
 .doc-pills { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
 .upload-label { display: block; margin-top: 6px; cursor: pointer; }
 .link-btn { color: var(--text-faint); font-size: 12.5px; text-decoration: underline; text-decoration-color: var(--border); text-underline-offset: 3px; }
-.link-btn:hover { color: var(--emerald); }
-.dropzone { margin-top: 10px; border: 1.5px dashed var(--border); border-radius: 6px; padding: 16px 12px; text-align: center; color: var(--text-faint); font-size: 12.5px; transition: border-color .15s, background .15s, color .15s; cursor: pointer; }
-.dropzone:hover, .dropzone.dragover { border-color: var(--emerald); color: var(--text-dim); background: var(--panel); }
-.dropzone.dragover { background: var(--emerald-dim); border-style: solid; }
+.link-btn:hover { color: var(--brass); }
+.dropzone { margin-top: 10px; border: 1.5px dashed var(--border); border-radius: 8px; padding: 16px 12px; text-align: center; color: var(--text-faint); font-size: 12.5px; transition: border-color .15s, background .15s, color .15s; cursor: pointer; }
+.dropzone:hover, .dropzone.dragover { border-color: var(--brass); color: var(--text-dim); background: var(--panel); }
+.dropzone.dragover { background: var(--brass-soft); border-style: solid; }
 .dropzone .dz-icon { font-size: 20px; display: block; margin-bottom: 4px; }
 .mode-toggle { display: flex; gap: 6px; margin-top: 10px; font-size: 12px; }
 .mode-toggle label { display: flex; align-items: center; gap: 5px; color: var(--text-dim); cursor: pointer; }
 .rgcn-badge { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--text-faint); margin-top: 8px; }
 .rgcn-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--border); flex-shrink: 0; }
-.rgcn-dot.on { background: var(--emerald); }
+.rgcn-dot.on { background: var(--graph); }
 .sidebar-footer { margin-top: auto; padding-top: 22px; color: var(--text-faint); font-size: 12px; line-height: 1.6; }
 .main { overflow-y: auto; padding: 30px 40px; }
 .empty-state { display: flex; flex-direction: column; align-items: flex-start; justify-content: center; height: 60vh; max-width: 480px; color: var(--text-dim); }
@@ -93,8 +113,10 @@ textarea, select, input { font-family: var(--sans); }
 .panel-header p { color: var(--text-dim); font-size: 14px; }
 .hidden { display: none !important; }
 
-/* graph */
-#graph-canvas { width: 100%; height: 62vh; background: var(--ink-2); border: 1px solid var(--border-soft); border-radius: 6px; }
+/* graph -- kept dark deliberately in both themes, like a map/code-editor
+   viewport: node colors are tuned for a dark canvas and stay legible that
+   way regardless of the surrounding page theme */
+#graph-canvas { width: 100%; height: 62vh; background: #12161d; border: 1px solid var(--border-soft); border-radius: 8px; }
 .legend { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
 .legend-item { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-dim); }
 .legend-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
@@ -102,9 +124,9 @@ textarea, select, input { font-family: var(--sans); }
 
 /* query */
 .ask-form { display: flex; gap: 10px; margin-bottom: 10px; }
-.ask-form textarea { flex: 1; background: var(--panel); border: 1px solid var(--border); color: var(--text); border-radius: 5px; padding: 11px 13px; font-size: 14.5px; resize: vertical; min-height: 46px; }
-.ask-controls { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; font-size: 13px; color: var(--text-dim); }
-.ask-controls select { background: var(--panel); border: 1px solid var(--border); color: var(--text); border-radius: 4px; padding: 5px 8px; }
+.ask-form textarea { flex: 1; background: var(--panel); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 11px 13px; font-size: 14.5px; resize: vertical; min-height: 46px; }
+.ask-controls { display: flex; align-items: center; gap: 16px; margin-bottom: 14px; font-size: 13px; color: var(--text-dim); flex-wrap: wrap; }
+.ask-controls select { background: var(--panel); border: 1px solid var(--border); color: var(--text); border-radius: 5px; padding: 5px 8px; }
 .compare-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
 .answer-col h3 { font-size: 15px; margin-bottom: 4px; }
 .answer-col .mode-badge { font-size: 11.5px; margin-bottom: 12px; }
@@ -113,7 +135,7 @@ textarea, select, input { font-family: var(--sans); }
 .citation .doc { color: var(--brass); font-family: var(--mono); }
 .sample-qs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 22px; }
 .sample-q { font-size: 12.5px; padding: 5px 11px; border: 1px solid var(--border); border-radius: 20px; color: var(--text-dim); background: var(--panel); }
-.sample-q:hover { border-color: var(--emerald); color: var(--text); }
+.sample-q:hover { border-color: var(--brass); color: var(--text); }
 
 /* communities */
 .community-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; }
@@ -121,23 +143,33 @@ textarea, select, input { font-family: var(--sans); }
 .community-card p { font-size: 13.5px; color: var(--text-dim); }
 .community-members { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 10px; }
 
-/* benchmark */
+/* benchmark -- GraphRAG and Vector RAG each get a fixed, distinct color
+   (teal-green vs slate-blue) reserved ONLY for comparing the two systems,
+   deliberately separate from the brass UI accent so "primary action" and
+   "which system is this" never look like the same signal */
 .bench-summary { display: flex; gap: 30px; margin-bottom: 24px; }
 .bench-score { text-align: center; }
 .bench-score .num { font-family: var(--serif); font-size: 40px; font-weight: 700; }
-.bench-score.graphrag .num { color: var(--emerald); }
-.bench-score.vector .num { color: var(--brass); }
+.bench-score.graphrag .num { color: var(--graph); }
+.bench-score.vector .num { color: var(--vector); }
 .bench-score .label { font-size: 12.5px; color: var(--text-faint); margin-top: 4px; }
 .bar-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; font-size: 12.5px; }
 .bar-track { flex: 1; height: 8px; background: var(--panel-2); border-radius: 4px; overflow: hidden; }
 .bar-fill { height: 100%; }
-.bar-fill.graphrag { background: var(--emerald); }
-.bar-fill.vector { background: var(--brass); }
+.bar-fill.graphrag { background: var(--graph); }
+.bar-fill.vector { background: var(--vector); }
 table.bench-table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 table.bench-table th, table.bench-table td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border-soft); vertical-align: top; }
 table.bench-table th { color: var(--text-faint); font-weight: 500; font-size: 12px; }
 .cat-tag { font-family: var(--mono); font-size: 11px; padding: 2px 7px; border-radius: 3px; border: 1px solid var(--border); color: var(--text-dim); }
 </style>
+<script>
+(function() {
+  var saved = localStorage.getItem('ledger_theme');
+  var theme = saved || (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+  document.documentElement.setAttribute('data-theme', theme);
+})();
+</script>
 </head>
 <body>
 
@@ -145,10 +177,11 @@ table.bench-table th { color: var(--text-faint); font-weight: 500; font-size: 12
   <aside class="sidebar">
     <div class="brand">
       <div class="brand-mark">L</div>
-      <div>
+      <div class="brand-text">
         <h1>Ledger</h1>
         <p class="tagline">GraphRAG for financial reports</p>
       </div>
+      <button class="theme-toggle" id="theme-toggle" title="Toggle light/dark" aria-label="Toggle light/dark theme"></button>
     </div>
 
     <nav class="tabs" id="tabs">
@@ -183,6 +216,26 @@ table.bench-table th { color: var(--text-faint); font-weight: 500; font-size: 12
 const API_BASE = (localStorage.getItem('ledger_api_base') || 'http://localhost:8000') + '/api';
 
 const state = { status: null, ingesting: false, tab: 'graph', network: null, ingestMode: 'add' };
+
+/* ---------------- theme ---------------- */
+
+const SUN_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>';
+const MOON_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a7 7 0 0 0 10.5 10.5Z"/></svg>';
+
+function applyThemeIcon() {
+  const theme = document.documentElement.getAttribute('data-theme');
+  document.getElementById('theme-toggle').innerHTML = theme === 'light' ? MOON_ICON : SUN_ICON;
+}
+
+document.getElementById('theme-toggle').addEventListener('click', () => {
+  const current = document.documentElement.getAttribute('data-theme');
+  const next = current === 'light' ? 'dark' : 'light';
+  document.documentElement.setAttribute('data-theme', next);
+  localStorage.setItem('ledger_theme', next);
+  applyThemeIcon();
+});
+applyThemeIcon();
+
 
 async function api(path, opts = {}) {
   const res = await fetch(API_BASE + path, opts);
@@ -364,8 +417,8 @@ function emptyState(title, body) {
 /* ---------------- graph tab ---------------- */
 
 const TYPE_COLORS = {
-  Company: '#4a9c78', Metric: '#cf9f2e', Period: '#6c8ebf', Segment: '#9c6dd4',
-  Person: '#5ba3a3', RiskFactor: '#c06356', Guidance: '#d4884a', Other: '#8a93a3',
+  Company: '#c99c4a', Metric: '#6d93c9', Period: '#4a9c82', Segment: '#a084c9',
+  Person: '#c9975f', RiskFactor: '#c97363', Guidance: '#7fb894', Other: '#8a93a3',
 };
 
 async function renderGraphTab() {
@@ -429,16 +482,19 @@ const SAMPLE_QUESTIONS = [
   "Which companies improved profitability year-over-year?",
 ];
 
-function renderAskTab() {
+async function renderAskTab() {
   const container = document.getElementById('tab-ask');
   if (!state.status || !state.status.ingested) {
     container.innerHTML = emptyState('Nothing to ask yet', 'Ingest documents from the sidebar first.');
     return;
   }
+  let analysis = null;
+  try { analysis = await api('/corpus-analysis'); } catch (e) {}
+
   container.innerHTML = `
     <div class="panel-header">
       <h2>Ask</h2>
-      <p>Ask a question and compare the GraphRAG answer against a vanilla vector-RAG baseline, side by side.</p>
+      <p>Ask a question. The engine (GraphRAG vs. vector RAG) is auto-selected based on this corpus's structure, or pick one manually.</p>
     </div>
     <div class="sample-qs">${SAMPLE_QUESTIONS.map(q => `<button class="sample-q" data-q="${escapeHtml(q)}">${escapeHtml(q)}</button>`).join('')}</div>
     <div class="ask-form">
@@ -446,7 +502,14 @@ function renderAskTab() {
       <button class="btn primary" id="ask-btn">Ask</button>
     </div>
     <div class="ask-controls">
-      <label><input type="checkbox" id="ask-compare" checked> Compare vs. vector RAG</label>
+      <label><input type="checkbox" id="ask-compare"> Compare vs. vector RAG</label>
+      <label>Engine
+        <select id="ask-engine">
+          <option value="auto" selected>Auto${analysis ? ` (recommends ${analysis.recommended_engine === 'graphrag' ? 'GraphRAG' : 'Vector RAG'})` : ''}</option>
+          <option value="graphrag">GraphRAG</option>
+          <option value="vector_rag">Vector RAG</option>
+        </select>
+      </label>
       <label>Mode
         <select id="ask-mode">
           <option value="auto" selected>Auto</option>
@@ -455,6 +518,7 @@ function renderAskTab() {
         </select>
       </label>
     </div>
+    ${analysis ? `<p class="dim-text small" id="router-reason">Router: ${escapeHtml(analysis.reason || '')}</p>` : ''}
     <div id="ask-results"></div>
   `;
   container.querySelectorAll('.sample-q').forEach(b => b.onclick = () => {
@@ -469,10 +533,12 @@ function renderAskTab() {
 
 function renderAnswer(title, badgeClass, resp) {
   const cites = (resp.citations || []).map(c => `<div class="citation"><span class="doc">${escapeHtml(c.doc_id)}</span> — ${escapeHtml((c.snippet||'').slice(0,180))}${(c.snippet||'').length>180?'…':''}</div>`).join('');
+  const engineNote = resp.engine_reason ? `<p class="dim-text small" style="margin-top:-6px;margin-bottom:10px;">${escapeHtml(resp.engine_reason)}</p>` : '';
   return `
     <div class="answer-col">
       <h3>${title}</h3>
       <div class="mode-badge pill ${badgeClass}">${escapeHtml(resp.mode_used || '')}</div>
+      ${engineNote}
       <div class="answer-body">${escapeHtml(resp.answer)}</div>
       ${cites ? `<div class="dim-text small" style="margin-bottom:6px;">Sources</div>${cites}` : ''}
     </div>
@@ -483,6 +549,7 @@ async function runAsk() {
   const question = document.getElementById('ask-input').value.trim();
   if (!question) return;
   const mode = document.getElementById('ask-mode').value;
+  const engine = document.getElementById('ask-engine').value;
   const compare = document.getElementById('ask-compare').checked;
   const resultsEl = document.getElementById('ask-results');
   resultsEl.innerHTML = `<p class="dim-text"><span class="spinner"></span> Thinking…</p>`;
@@ -494,14 +561,16 @@ async function runAsk() {
       });
       resultsEl.innerHTML = `<div class="compare-grid">
         ${renderAnswer('GraphRAG', 'emerald', res.graphrag)}
-        ${renderAnswer('Vector RAG (baseline)', '', res.vector_rag)}
+        ${renderAnswer('Vector RAG (baseline)', 'vector', res.vector_rag)}
       </div>`;
     } else {
       const res = await api('/query', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question, mode }),
+        body: JSON.stringify({ question, mode, engine }),
       });
-      resultsEl.innerHTML = `<div class="card">${renderAnswer('GraphRAG', 'emerald', res)}</div>`;
+      const title = res.engine_used === 'vector_rag' ? 'Vector RAG' : 'GraphRAG';
+      const badge = res.engine_used === 'vector_rag' ? 'vector' : 'emerald';
+      resultsEl.innerHTML = `<div class="card">${renderAnswer(title, badge, res)}</div>`;
     }
   } catch (e) {
     resultsEl.innerHTML = `<p class="error-text">${escapeHtml(e.message)}</p>`;
@@ -592,8 +661,8 @@ function renderBenchResults(summary) {
           <tr>
             <td>${escapeHtml(r.question)}</td>
             <td><span class="cat-tag">${escapeHtml(r.category)}</span></td>
-            <td style="color:var(--emerald);font-weight:600;">${r.graphrag_score}</td>
-            <td style="color:var(--brass);font-weight:600;">${r.vector_rag_score}</td>
+            <td style="color:var(--graph);font-weight:600;">${r.graphrag_score}</td>
+            <td style="color:var(--vector);font-weight:600;">${r.vector_rag_score}</td>
             <td class="dim-text">${escapeHtml(r.judge_rationale)}</td>
           </tr>
         `).join('')}

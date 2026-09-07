@@ -3,6 +3,7 @@ Ingestion: chunk raw document text and extract (entity, relation, entity)
 triples from each chunk using a local Ollama model with a strict JSON schema.
 """
 from __future__ import annotations
+from concurrent.futures import ThreadPoolExecutor
 from typing import List
 
 from . import config
@@ -112,9 +113,33 @@ def extract_from_chunk(chunk: dict) -> ExtractionResult:
     )
 
 
-def extract_document(doc_id: str, text: str) -> List[ExtractionResult]:
-    chunks = chunk_text(text, doc_id)
-    results = []
-    for chunk in chunks:
-        results.append(extract_from_chunk(chunk))
-    return results
+def extract_document(doc_id: str, text: str) -> "tuple[list[dict], list[ExtractionResult]]":
+    """Full per-document pipeline: strip out whitespace-aligned tables and
+    extract them deterministically (table_parser.py, no LLM call, more
+    reliable for numbers than a small model reading a flattened grid), then
+    chunk and LLM-extract whatever prose is left, concurrently.
+
+    Returns (chunk_records, extraction_results) -- chunk_records includes
+    both the table blocks (as citable chunks) and the narrative chunks, so
+    the caller can register all of them for citations/hybrid-grounding in
+    one place.
+    """
+    from . import table_parser
+
+    table_entities, table_triples, remaining_text = table_parser.detect_and_extract_tables(text, doc_id)
+    table_chunks = table_parser.table_chunk_texts(text, doc_id)
+
+    results: List[ExtractionResult] = []
+    if table_entities or table_triples:
+        results.append(ExtractionResult(
+            doc_id=doc_id, chunk_id=f"{doc_id}::tables",
+            entities=table_entities, triples=table_triples,
+        ))
+
+    narrative_chunks = chunk_text(remaining_text, doc_id)
+    if narrative_chunks:
+        with ThreadPoolExecutor(max_workers=config.EXTRACTION_CONCURRENCY) as pool:
+            llm_results = list(pool.map(extract_from_chunk, narrative_chunks))
+        results.extend(llm_results)
+
+    return table_chunks + narrative_chunks, results

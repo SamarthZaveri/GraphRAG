@@ -45,6 +45,7 @@ class IngestResponse(BaseModel):
 class QueryRequest(BaseModel):
     question: str
     mode: Literal["auto", "local", "global"] = "auto"
+    engine: Literal["auto", "graphrag", "vector_rag"] = "auto"
 
 
 class Citation(BaseModel):
@@ -56,8 +57,10 @@ class Citation(BaseModel):
 class QueryResponse(BaseModel):
     question: str
     mode_used: Literal["local", "global"]
+    engine_used: Optional[str] = None
+    engine_reason: Optional[str] = None
     answer: str
-    citations: List[Citation]
+    citations: List[Citation] = []
     graph_path: Optional[List[str]] = None  # entity names touched, for local mode
 
 

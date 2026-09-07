@@ -16,7 +16,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from app import config, ollama_client, rgcn
-from app.extraction import extract_document, chunk_text
+from app.extraction import extract_document
 from app.graph_store import reset_store
 from app.community import build_community_summaries, save_summaries
 from app import vector_baseline, benchmark
@@ -41,8 +41,7 @@ def main():
         doc_id = path.stem
         text = path.read_text()
         print(f"-- Extracting entities/relations from {doc_id} ...")
-        chunks = chunk_text(text, doc_id)
-        results = extract_document(doc_id, text)
+        chunks, results = extract_document(doc_id, text)
         store.ingest_document_chunks(doc_id, chunks, results)
         vector_baseline.ingest_document(doc_id, text)
         n_ent = sum(len(r.entities) for r in results)

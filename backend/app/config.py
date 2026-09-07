@@ -40,9 +40,16 @@ OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 # high-volume extraction pass, a bigger one for final answers/judging).
 EXTRACTION_MODEL = os.environ.get("LEDGER_EXTRACTION_MODEL", "qwen2.5:3b-instruct")
 ANSWER_MODEL = os.environ.get("LEDGER_ANSWER_MODEL", "qwen2.5:3b-instruct")
-JUDGE_MODEL = os.environ.get("LEDGER_JUDGE_MODEL", "qwen2.5:7b-instruct")
+JUDGE_MODEL = os.environ.get("LEDGER_JUDGE_MODEL", "qwen2.5:3b-instruct")
 
 OLLAMA_REQUEST_TIMEOUT = int(os.environ.get("LEDGER_OLLAMA_TIMEOUT", "180"))
+
+# Chunks are extracted concurrently (bounded thread pool) since each call is
+# a blocking HTTP request to Ollama -- I/O wait, not CPU, so threads help.
+# How much depends on Ollama's own parallelism setting (OLLAMA_NUM_PARALLEL
+# on the server side); 4 is a reasonable default that won't overwhelm a
+# single local model instance.
+EXTRACTION_CONCURRENCY = int(os.environ.get("LEDGER_EXTRACTION_CONCURRENCY", "4"))
 
 CHUNK_SIZE_CHARS = 1800
 CHUNK_OVERLAP_CHARS = 200
