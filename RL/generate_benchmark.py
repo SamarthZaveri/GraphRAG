@@ -22,6 +22,7 @@ from app import config  # noqa: E402
 
 MAX_CHARS_PER_DOC = 3500
 QUESTIONS_PER_CORPUS = 6
+MAX_TOTAL_INPUT_CHARS = 10000  # scale per-doc budget down as doc count grows, so total input (and the model's job) stays bounded regardless of corpus size
 
 GENERATE_SYSTEM_PROMPT = f"""You write benchmark question/reference-answer pairs to evaluate a \
 financial-document question-answering system, given the full text of several real financial \
