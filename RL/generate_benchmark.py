@@ -49,16 +49,44 @@ def _truncate(text: str, max_chars: int) -> str:
     return text if len(text) <= max_chars else text[:max_chars] + "\n[...truncated...]"
 
 
+def _per_doc_budget(num_docs: int) -> int:
+    """Scales the per-document character budget down as document count
+    grows, so total input (and the model's job size) stays roughly bounded
+    regardless of corpus size -- this is what broke on the 4-doc
+    longitudinal corpora: 4 x 3500 chars of input left too little output
+    budget for the model to complete valid JSON."""
+    if num_docs <= 0:
+        return MAX_CHARS_PER_DOC
+    return max(1200, min(MAX_CHARS_PER_DOC, MAX_TOTAL_INPUT_CHARS // num_docs))
+
+
 def generate_benchmark_for_corpus(doc_texts: List[str], doc_ids: List[str]) -> List[dict]:
     """doc_texts and doc_ids are parallel lists. Returns a list of question dicts
     matching the same shape as backend/data/benchmark_questions.json (minus 'id',
     which the caller should assign)."""
-    labeled = [f"=== DOCUMENT: {doc_id} ===\n{_truncate(text, MAX_CHARS_PER_DOC)}"
+    per_doc_budget = _per_doc_budget(len(doc_texts))
+    labeled = [f"=== DOCUMENT: {doc_id} ===\n{_truncate(text, per_doc_budget)}"
                for doc_id, text in zip(doc_ids, doc_texts)]
     combined = "\n\n".join(labeled)
 
-    data = chat_json(config.JUDGE_MODEL, GENERATE_SYSTEM_PROMPT, combined, max_tokens=1800, temperature=0.4)
+    data = chat_json(config.JUDGE_MODEL, GENERATE_SYSTEM_PROMPT, combined, max_tokens=2800, temperature=0.4)
     questions = data.get("questions", []) if isinstance(data, dict) else []
+
+    if not questions and len(doc_texts) > 2:
+        # Fallback: the combined prompt was likely still too large for the
+        # model to produce complete JSON. Retry once with a harder per-doc
+        # cap and fewer requested questions rather than silently returning
+        # nothing.
+        tight_budget = max(800, MAX_TOTAL_INPUT_CHARS // (2 * len(doc_texts)))
+        labeled = [f"=== DOCUMENT: {doc_id} ===\n{_truncate(text, tight_budget)}"
+                   for doc_id, text in zip(doc_ids, doc_texts)]
+        combined = "\n\n".join(labeled)
+        retry_prompt = GENERATE_SYSTEM_PROMPT.replace(
+            f"Generate exactly {QUESTIONS_PER_CORPUS} questions",
+            "Generate exactly 4 questions",
+        )
+        data = chat_json(config.JUDGE_MODEL, retry_prompt, combined, max_tokens=2000, temperature=0.4)
+        questions = data.get("questions", []) if isinstance(data, dict) else []
 
     cleaned = []
     for q in questions:
