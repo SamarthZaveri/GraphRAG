@@ -101,13 +101,24 @@ def run_one_corpus(corpus_dir: Path) -> dict:
     print(f"  {len(questions)} questions generated")
 
     graphrag_scores, vector_scores = [], []
-    for q in questions:
+    for i, q in enumerate(questions, 1):
         graphrag_resp = query_engine.answer_question(q["question"], mode="auto")
         vector_resp = vector_baseline.answer_question(q["question"])
         verdict = backend_benchmark.judge(q["question"], q["reference_answer"],
                                            graphrag_resp.answer, vector_resp.answer)
         graphrag_scores.append(float(verdict.get("score_a", 0)))
         vector_scores.append(float(verdict.get("score_b", 0)))
+        # DIAGNOSTIC (added while investigating the five9_longitudinal /
+        # semiconductors_2025 low-score anomaly): print each question's
+        # reference answer, both engines' scores, and the judge's
+        # rationale. Previously only the aggregate average was visible,
+        # which made it impossible to tell "both engines are genuinely
+        # bad here" apart from "the reference answer itself is wrong,"
+        # e.g. from truncated per-doc context in generate_benchmark.py.
+        print(f"    Q{i}: {q['question'][:90]!r}")
+        print(f"      reference: {q['reference_answer'][:150]!r}")
+        print(f"      scores: graphrag={verdict.get('score_a')} vector={verdict.get('score_b')} "
+              f"-- {verdict.get('rationale', '')[:180]}")
 
     reward_graphrag = sum(graphrag_scores) / len(graphrag_scores) / 5.0  # normalize 0-5 -> 0-1
     reward_vector = sum(vector_scores) / len(vector_scores) / 5.0
