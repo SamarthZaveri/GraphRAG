@@ -34,7 +34,7 @@ from app.community import build_community_summaries, save_summaries, load_modula
 from app import rgcn, vector_baseline, query_engine, benchmark as backend_benchmark  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).parent))
-from features import extract_features  # noqa: E402
+from features import extract_features, FEATURE_NAMES  # noqa: E402
 from generate_benchmark import generate_benchmark_for_corpus  # noqa: E402
 
 CORPORA_DIR = Path(__file__).parent / "data" / "corpora"
@@ -67,6 +67,12 @@ def ingest_corpus(corpus_dir: Path):
     summaries = build_community_summaries(store)
     save_summaries(summaries)
     rgcn_result = rgcn.train_and_save(store.graph)
+    # NOTE: rgcn_result / val_auc is still computed and the R-GCN is still
+    # trained and saved here -- the query engine / main app may still use
+    # the trained embeddings for retrieval. It's only DROPPED from the
+    # router's feature vector below (see features.py), because rgcn_val_auc
+    # as a router feature was found to saturate uninformatively across
+    # almost every corpus in the 12-corpus real run.
 
     return store, doc_texts, doc_ids, rgcn_result
 
@@ -80,8 +86,12 @@ def run_one_corpus(corpus_dir: Path) -> dict:
 
     modularity_info = load_modularity()
     val_auc = rgcn_result.get("val_auc") if rgcn_result else None
+    # modularity_info / val_auc are still passed through for signature
+    # compatibility but are IGNORED inside extract_features now -- see
+    # features.py's revision note. Router features are recomputed there
+    # directly from the graph's cross-document structure.
     features = extract_features(store, modularity_info.get("modularity"), val_auc)
-    print(f"  features: {dict(zip(['cross_doc','modularity','rgcn_auc','num_docs','bias'], features.round(3)))}")
+    print(f"  features: {dict(zip(FEATURE_NAMES, features.round(3)))}")
 
     print("  generating benchmark questions...")
     questions = generate_benchmark_for_corpus(doc_texts, doc_ids)
