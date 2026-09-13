@@ -109,3 +109,57 @@ def extract_features(store, modularity: float | None = None, rgcn_val_auc: float
         num_docs_norm,
         1.0,
     ], dtype=float)
+
+
+# ---------------------------------------------------------------------------
+# Per-QUESTION context, for the query-level engine router.
+#
+# The corpus-level bandit above answers "should this whole corpus route to
+# GraphRAG or vector RAG" -- and real 12-corpus data showed that's the wrong
+# question: five9_longitudinal and maxlinear_longitudinal had the highest
+# cross-doc structure of any corpus and vector RAG still won both, most
+# likely because most of their individual questions were simple local
+# lookups despite the corpus itself being complex. The engine that wins
+# depends on the QUESTION, not just the corpus it came from.
+#
+# This context vector combines the doc-level structural features (proven
+# useful above) with the question's own category -- local/global/multi_hop/
+# conflict, the SAME taxonomy generate_benchmark.py already labels questions
+# with and query_engine.classify_query() already predicts at inference time.
+# No new classifier or labeling scheme was introduced; this reuses both.
+# ---------------------------------------------------------------------------
+
+QUERY_CATEGORIES = ["local", "global", "multi_hop", "conflict"]
+QUERY_CONTEXT_DIM = 8  # 3 doc features (bias dropped) + 4 one-hot category + 1 combined bias
+QUERY_FEATURE_NAMES = [
+    "cross_doc_entity_fraction",
+    "entity_recurrence_depth",
+    "num_docs_normalized",
+    "cat_local",
+    "cat_global",
+    "cat_multi_hop",
+    "cat_conflict",
+    "bias",
+]
+
+
+def build_query_context(doc_features: np.ndarray, category: str) -> np.ndarray:
+    """
+    Combines a corpus's doc-level context (from extract_features, a 4-dim
+    vector ending in its own bias term) with a one-hot encoding of this
+    question's category, into one 8-dim vector for the per-question bandit.
+
+    The doc-level vector's own bias term is dropped here (index 3) since
+    the combined vector carries a single shared bias term at the end
+    instead -- keeping two separate "always 1.0" bias entries would double
+    -count the intercept for no benefit.
+
+    Unrecognized categories fall back to "global" rather than raising, to
+    match the same fallback behavior used elsewhere (generate_benchmark.py,
+    classify_query) when a category is missing or malformed.
+    """
+    if category not in QUERY_CATEGORIES:
+        category = "global"
+    doc_part = [float(doc_features[0]), float(doc_features[1]), float(doc_features[2])]
+    one_hot = [1.0 if category == c else 0.0 for c in QUERY_CATEGORIES]
+    return np.array(doc_part + one_hot + [1.0], dtype=float)

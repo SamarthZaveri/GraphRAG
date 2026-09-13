@@ -34,11 +34,17 @@ from app.community import build_community_summaries, save_summaries, load_modula
 from app import rgcn, vector_baseline, query_engine, benchmark as backend_benchmark  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).parent))
-from features import extract_features, FEATURE_NAMES  # noqa: E402
+from features import extract_features, FEATURE_NAMES, build_query_context  # noqa: E402
 from generate_benchmark import generate_benchmark_for_corpus  # noqa: E402
 
 CORPORA_DIR = Path(__file__).parent / "data" / "corpora"
 RESULTS_PATH = Path(__file__).parent / "data" / "experiment_results.jsonl"
+# NEW: per-QUESTION rows, for the query-level engine router. Each row is one
+# (corpus, question) pair instead of one corpus-level average -- this is
+# what turns ~12 corpus-level examples into ~70+ real training examples for
+# the bandit, using data this script was already generating and previously
+# discarding (the per-question category and score).
+QUERY_RESULTS_PATH = Path(__file__).parent / "data" / "query_results.jsonl"
 
 
 def ingest_corpus(corpus_dir: Path):
@@ -77,7 +83,7 @@ def ingest_corpus(corpus_dir: Path):
     return store, doc_texts, doc_ids, rgcn_result
 
 
-def run_one_corpus(corpus_dir: Path) -> dict:
+def run_one_corpus(corpus_dir: Path):
     print(f"\n=== {corpus_dir.name} ===")
     t0 = time.time()
     store, doc_texts, doc_ids, rgcn_result = ingest_corpus(corpus_dir)
@@ -97,17 +103,20 @@ def run_one_corpus(corpus_dir: Path) -> dict:
     questions = generate_benchmark_for_corpus(doc_texts, doc_ids)
     if not questions:
         print("  WARNING: no questions generated, skipping this corpus")
-        return None
+        return None, []
     print(f"  {len(questions)} questions generated")
 
     graphrag_scores, vector_scores = [], []
+    query_rows = []
     for i, q in enumerate(questions, 1):
         graphrag_resp = query_engine.answer_question(q["question"], mode="auto")
         vector_resp = vector_baseline.answer_question(q["question"])
         verdict = backend_benchmark.judge(q["question"], q["reference_answer"],
                                            graphrag_resp.answer, vector_resp.answer)
-        graphrag_scores.append(float(verdict.get("score_a", 0)))
-        vector_scores.append(float(verdict.get("score_b", 0)))
+        score_graphrag = float(verdict.get("score_a", 0))
+        score_vector = float(verdict.get("score_b", 0))
+        graphrag_scores.append(score_graphrag)
+        vector_scores.append(score_vector)
         # DIAGNOSTIC (added while investigating the five9_longitudinal /
         # semiconductors_2025 low-score anomaly): print each question's
         # reference answer, both engines' scores, and the judge's
@@ -120,12 +129,29 @@ def run_one_corpus(corpus_dir: Path) -> dict:
         print(f"      scores: graphrag={verdict.get('score_a')} vector={verdict.get('score_b')} "
               f"-- {verdict.get('rationale', '')[:180]}")
 
+        # NEW: per-question row for the query-level bandit. category comes
+        # straight from generate_benchmark_for_corpus's own labeling --
+        # no extra classification call needed here, since the generator
+        # already knows what kind of question it wrote. (query_engine.
+        # classify_query() is the equivalent call used at live inference
+        # time on real, unlabeled user questions, not here.)
+        category = q.get("category", "local")
+        query_context = build_query_context(features, category)
+        query_rows.append({
+            "corpus": corpus_dir.name,
+            "question": q["question"],
+            "category": category,
+            "context": query_context.tolist(),
+            "reward_graphrag": score_graphrag / 5.0,
+            "reward_vector_rag": score_vector / 5.0,
+        })
+
     reward_graphrag = sum(graphrag_scores) / len(graphrag_scores) / 5.0  # normalize 0-5 -> 0-1
     reward_vector = sum(vector_scores) / len(vector_scores) / 5.0
     print(f"  GraphRAG avg: {reward_graphrag*5:.2f}/5, Vector RAG avg: {reward_vector*5:.2f}/5 "
           f"({time.time()-t0:.0f}s total)")
 
-    return {
+    corpus_row = {
         "corpus": corpus_dir.name,
         "num_docs": len(doc_ids),
         "features": features.tolist(),
@@ -133,6 +159,7 @@ def run_one_corpus(corpus_dir: Path) -> dict:
         "reward_vector_rag": reward_vector,
         "num_questions": len(questions),
     }
+    return corpus_row, query_rows
 
 
 def main():
@@ -157,11 +184,13 @@ def main():
 
     RESULTS_PATH.parent.mkdir(parents=True, exist_ok=True)
     results = []
+    all_query_rows = []
     for corpus_dir in corpus_dirs:
         try:
-            result = run_one_corpus(corpus_dir)
-            if result:
-                results.append(result)
+            corpus_row, query_rows = run_one_corpus(corpus_dir)
+            if corpus_row:
+                results.append(corpus_row)
+                all_query_rows.extend(query_rows)
         except Exception:
             print(f"  FAILED on {corpus_dir.name}:")
             traceback.print_exc()
@@ -170,7 +199,12 @@ def main():
         for r in results:
             f.write(json.dumps(r) + "\n")
 
+    with open(QUERY_RESULTS_PATH, "a") as f:
+        for r in all_query_rows:
+            f.write(json.dumps(r) + "\n")
+
     print(f"\n{len(results)} corpora completed, appended to {RESULTS_PATH}")
+    print(f"{len(all_query_rows)} per-question rows appended to {QUERY_RESULTS_PATH}")
 
 
 if __name__ == "__main__":
