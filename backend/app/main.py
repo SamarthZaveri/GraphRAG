@@ -194,17 +194,23 @@ def get_corpus_analysis():
 
 @app.post("/api/query", response_model=QueryResponse)
 def query(req: QueryRequest):
-    """Single-answer query for the Ask tab. engine="auto" defers to the
-    corpus-health router's recommendation; "graphrag"/"vector_rag" force a
-    manual choice. This routing does NOT apply to /api/query/compare, which
-    always runs both engines by design."""
+    """Single-answer query for the Ask tab. engine="auto" now routes PER
+    QUESTION via corpus_router.route_query(), which combines this corpus's
+    doc-level structure with a live classification of the question itself
+    (local/global/multi_hop/conflict) and scores both engines using a
+    trained contextual bandit. This replaced a static, corpus-wide
+    recommendation after real evaluation data showed corpus structure
+    alone doesn't predict which engine wins on any individual question --
+    see corpus_router.route_query's docstring. Falls back automatically to
+    the previous rule-based corpus-level recommendation if no trained
+    query bandit is available yet. "graphrag"/"vector_rag" still force a
+    manual choice, unchanged. This routing does NOT apply to
+    /api/query/compare, which always runs both engines by design."""
     try:
         engine = req.engine
         reason = None
         if engine == "auto":
-            analysis = corpus_router.load_analysis() or corpus_router.analyze_corpus()
-            engine = analysis.get("recommended_engine", "graphrag")
-            reason = analysis.get("reason")
+            engine, reason = corpus_router.route_query(req.question)
 
         if engine == "vector_rag":
             resp = vector_baseline.answer_question(req.question)

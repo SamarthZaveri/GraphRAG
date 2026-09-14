@@ -22,6 +22,7 @@ if GraphRAG were losing to vector RAG mainly because compressed graph
 triples threw away detail the raw prose had, this closes that gap directly.
 """
 from __future__ import annotations
+import re
 from difflib import SequenceMatcher
 from typing import List, Tuple
 
@@ -38,31 +39,95 @@ GLOBAL_TOP_N_COMMUNITIES = 4
 HYBRID_CHUNK_TOP_K = 4
 HYBRID_VECTOR_FALLBACK_K = 4
 
+# Real 12-corpus, 70-question evaluation found GraphRAG's worst losses
+# clustered on larger multi-doc graphs, with judge rationales repeatedly
+# saying "wrong time period" / "off-topic" -- while vector RAG (pure
+# embedding similarity, no entity linking) got the same facts right almost
+# every time. Root cause, confirmed with synthetic tests: on a large graph,
+# node names differing ONLY by year ("MaxLinear Q2 2025 net revenue" vs
+# "MaxLinear Q2 2026 net revenue") score within ~0.04 of each other on raw
+# string similarity -- well within noise, so the wrong-period node can win
+# seed selection just as easily as the right one. YEAR_PATTERN below is
+# used to penalize candidates whose year conflicts with the year explicitly
+# named in the search term, since real-world name variation can flip a
+# ~0.04 gap in either direction.
+YEAR_PATTERN = re.compile(r"\b(20\d{2})\b")
+YEAR_CONFLICT_PENALTY = 0.4  # multiplicative penalty applied to a candidate's score
 
-ROUTER_SYSTEM_PROMPT = """Classify a question about a set of financial reports/filings as \
-either "local" or "global":
+
+def _years_in(text: str) -> set:
+    return set(YEAR_PATTERN.findall(text))
+
+
+ROUTER_SYSTEM_PROMPT = """Classify a question about a set of financial reports/filings into \
+exactly one of these categories -- the SAME taxonomy this system's own benchmark generator uses \
+(see generate_benchmark.py), so classification here and question labeling there stay consistent:
 
 - "local": the question is about specific named companies/metrics/periods and their direct \
   relationships or values (e.g. "What was MaxLinear's Q2 2025 net revenue?", "Who was appointed \
   Five9's CFO?").
-- "global": the question requires synthesizing across many entities/documents or asks for a \
-  broad theme, comparison, or summary (e.g. "Compare revenue growth across all three companies", \
-  "Which companies improved margins this quarter?", "Summarize the key risks across all \
-  filings.").
+- "global": requires synthesizing across many entities/documents or asks for a broad theme, \
+  comparison, or summary (e.g. "Compare revenue growth across all three companies", "Which \
+  companies improved margins this quarter?", "Summarize the key risks across all filings.").
+- "multi_hop": requires connecting two or more specific facts (may be within one document or \
+  across documents) to answer, e.g. comparing two metrics or two periods.
+- "conflict": asks whether something is consistent or inconsistent across the documents (a \
+  definition, a period boundary, a reported figure).
 
 Also extract up to 4 key entity names mentioned or implied in the question (company names, \
-metric names, periods) for local search seeding, even if you classify it as global.
+metric names, periods) for local search seeding, regardless of category.
 
-Return ONLY JSON, no preamble: {"mode": "local"|"global", "entities": [str, ...]}
+Return ONLY JSON, no preamble: {"category": "local"|"global"|"multi_hop"|"conflict", \
+"entities": [str, ...]}
 """
 
 
-def route_question(question: str) -> Tuple[str, List[str]]:
+def classify_query(question: str) -> Tuple[str, List[str]]:
+    """Full 4-way classification, matching BenchmarkQuestion's category
+    taxonomy exactly (local/global/multi_hop/conflict). This single call
+    serves two consumers: (1) route_question() below collapses it to
+    local/global for GraphRAG's own internal search-strategy dispatch,
+    same behavior as before this edit; (2) the engine router (which
+    decides GraphRAG vs vector RAG -- not built in this file, see
+    corpus_router.py) can use the full 4-way category as a feature,
+    without needing a second LLM call at query time."""
     data = chat_json(config.EXTRACTION_MODEL, ROUTER_SYSTEM_PROMPT, question, max_tokens=250)
-    mode = data.get("mode", "global")
-    if mode not in ("local", "global"):
-        mode = "global"
-    return mode, data.get("entities", []) or []
+    category = data.get("category", "global")
+    if category not in ("local", "global", "multi_hop", "conflict"):
+        category = "global"
+    return category, data.get("entities", []) or []
+
+
+def route_question(question: str) -> Tuple[str, List[str]]:
+    """Backward-compatible local/global mode for GraphRAG's own internal
+    search dispatch (see answer_question below) -- unchanged behavior from
+    before this edit. Collapses the fuller 4-way category down to what the
+    retrieval logic currently understands: "local" stays local search;
+    global/multi_hop/conflict all route to global search, since multi_hop
+    and conflict both need synthesis across more than one specific spot,
+    same as global does."""
+    category, entities = classify_query(question)
+    mode = "local" if category == "local" else "global"
+    return mode, entities
+
+
+def _year_aware_score(name: str, candidate: str) -> float:
+    """
+    String similarity with a penalty for year conflicts. Plain
+    SequenceMatcher.ratio() barely distinguishes "Q2 2025 net revenue" from
+    "Q2 2026 net revenue" (a ~0.04 gap in testing) since only 4 characters
+    differ out of a long string -- on a large graph with many near-identical
+    period-labeled entities, that gap is well within noise and the wrong
+    period can win. If the search name specifies a year and the candidate
+    specifies a DIFFERENT year, that's an unambiguous signal the candidate
+    is wrong regardless of how similar the rest of the string looks.
+    """
+    base = SequenceMatcher(None, name.lower(), candidate.lower()).ratio()
+    name_years = _years_in(name)
+    cand_years = _years_in(candidate)
+    if name_years and cand_years and name_years.isdisjoint(cand_years):
+        return base * YEAR_CONFLICT_PENALTY
+    return base
 
 
 def _fuzzy_match_nodes(names: List[str], store: GraphStore, top_n: int = 4) -> List[str]:
@@ -70,11 +135,11 @@ def _fuzzy_match_nodes(names: List[str], store: GraphStore, top_n: int = 4) -> L
     matched = []
     for name in names:
         scored = sorted(
-            all_nodes, key=lambda n: SequenceMatcher(None, name.lower(), n.lower()).ratio(),
+            all_nodes, key=lambda n: _year_aware_score(name, n),
             reverse=True,
         )
         best = scored[0] if scored else None
-        best_score = SequenceMatcher(None, name.lower(), best.lower()).ratio() if best else 0.0
+        best_score = _year_aware_score(name, best) if best else 0.0
         if best is not None and best_score > 0.55 and best not in matched:
             matched.append(best)
             continue
@@ -108,7 +173,7 @@ def _graph_hop_expand(store: GraphStore, seeds: List[str], hops: int) -> set:
     return visited
 
 
-def _local_context(question: str, store: GraphStore, seed_entities: List[str]):
+def _local_context(question: str, store: GraphStore, seed_entities: List[str], use_hybrid: bool = True):
     seeds = _fuzzy_match_nodes(seed_entities, store)
     if not seeds:
         q_lower = question.lower()
@@ -145,33 +210,58 @@ def _local_context(question: str, store: GraphStore, seed_entities: List[str]):
             tag = " [via R-GCN]" if n in rgcn_neighbors else ""
             node_lines.append(f"- {n} ({d.get('type')}){tag}: {d.get('description', '')}")
 
-    # Hybrid grounding, always-on: pull the raw source-chunk text for the
-    # facts found via graph traversal (capped)...
+    # Hybrid grounding. ORDER MATTERS here when enabled: vector-similarity
+    # chunks go FIRST, graph-traversal chunks go SECOND. Real evaluation
+    # data showed GraphRAG's worst failures were "wrong time period"
+    # answers on larger graphs -- if a fuzzy-matched seed grabbed the wrong
+    # period (see _year_aware_score above), the graph-derived chunk for
+    # that wrong period would previously appear FIRST in context, and an
+    # LLM instructed to "copy figures exactly as given" can end up copying
+    # the wrong period's figure with full confidence. Vector similarity
+    # doesn't depend on entity-name string matching, so it's less prone to
+    # this specific failure mode -- giving it primacy in context doesn't
+    # fix a bad seed match, but it stops a bad seed match from actively
+    # out-competing the correct content for the model's attention.
+    #
+    # use_hybrid=False disables this block entirely, for the graph-only
+    # ablation (see RL/run_ablation.py): GraphRAG's own hybrid safety net
+    # already pulls in the same vector-similarity chunks vector RAG uses,
+    # so a "GraphRAG vs vector RAG" comparison with hybrid always-on isn't
+    # really testing graph retrieval against vector retrieval -- it's
+    # testing (graph + vector) against (vector alone). Disabling it here
+    # isolates what graph structure alone actually contributes.
     raw_chunks = []
-    for cid in list(chunk_ids_seen)[:HYBRID_CHUNK_TOP_K]:
-        chunk = store.chunks.get(cid, {})
-        if chunk.get("text"):
-            raw_chunks.append(f"[{chunk.get('doc_id')} | {cid}]\n{chunk['text']}")
+    if not use_hybrid:
+        for cid in list(chunk_ids_seen)[:HYBRID_CHUNK_TOP_K]:
+            chunk = store.chunks.get(cid, {})
+            if chunk.get("text"):
+                raw_chunks.append(f"[{chunk.get('doc_id')} | {cid}]\n{chunk['text']}")
+        return seeds, list(visited), node_lines, facts, citations[:14], raw_chunks
 
-    # ...PLUS independently pull the same top-k chunks a vector-similarity
-    # search over the question would return, regardless of whether graph
-    # traversal found anything. This is the actual hybrid-retrieval safety
-    # net: if entity linking fails or the graph has a gap, GraphRAG still
-    # gets grounded in the same raw text the vector baseline would use,
-    # instead of answering from a possibly-empty facts list.
+    # Snapshot BEFORE the vector-fallback loop mutates chunk_ids_seen, so
+    # the two sources stay cleanly separable.
+    graph_derived_chunk_ids = set(chunk_ids_seen)
+
     try:
         from . import vector_baseline
         collection = vector_baseline.get_collection()
         if collection.count() > 0:
             results = collection.query(query_texts=[question], n_results=min(HYBRID_VECTOR_FALLBACK_K, collection.count()))
             for cid, doc_text, meta in zip(results["ids"][0], results["documents"][0], results["metadatas"][0]):
-                if cid in chunk_ids_seen:
-                    continue  # already included above
+                if cid in graph_derived_chunk_ids:
+                    continue  # will be added in its graph-derived form below; skip the duplicate
                 raw_chunks.append(f"[{meta.get('doc_id')} | {cid}]\n{doc_text}")
                 chunk_ids_seen.add(cid)
                 citations.append(Citation(doc_id=meta.get("doc_id", ""), chunk_id=cid, snippet=doc_text[:300]))
     except Exception:
         pass  # vector baseline not available/ingested yet — graph-only context still works
+
+    # ...then graph-traversal-found chunks (capped), appended AFTER so they
+    # don't crowd out the vector-similarity chunks' primacy in context.
+    for cid in list(graph_derived_chunk_ids)[:HYBRID_CHUNK_TOP_K]:
+        chunk = store.chunks.get(cid, {})
+        if chunk.get("text"):
+            raw_chunks.append(f"[{chunk.get('doc_id')} | {cid}]\n{chunk['text']}")
 
     return seeds, list(visited), node_lines, facts, citations[:14], raw_chunks
 
@@ -193,13 +283,15 @@ then show your work briefly so an error is visible rather than presented as fact
 Keep the answer focused and no longer than necessary."""
 
 
-def answer_local(question: str) -> QueryResponse:
+def answer_local(question: str, use_hybrid: bool = True) -> QueryResponse:
     store = GraphStore.load()
     if store is None or store.graph.number_of_nodes() == 0:
         return QueryResponse(question=question, mode_used="local",
                               answer="No documents have been ingested yet.", citations=[])
     _, seed_entities = route_question(question)
-    seeds, visited, node_lines, facts, citations, raw_chunks = _local_context(question, store, seed_entities)
+    seeds, visited, node_lines, facts, citations, raw_chunks = _local_context(
+        question, store, seed_entities, use_hybrid=use_hybrid
+    )
 
     context_parts = ["ENTITIES:\n" + "\n".join(node_lines), "\nFACTS:\n" + "\n".join(facts)]
     if raw_chunks:
@@ -247,11 +339,17 @@ def answer_global(question: str) -> QueryResponse:
     return QueryResponse(question=question, mode_used="global", answer=answer, citations=citations)
 
 
-def answer_question(question: str, mode: str = "auto") -> QueryResponse:
+def answer_question(question: str, mode: str = "auto", use_hybrid: bool = True) -> QueryResponse:
+    """
+    use_hybrid only affects LOCAL mode (answer_global uses community
+    summaries, a separate mechanism with no vector fallback to toggle).
+    Defaults to True, matching production behavior unchanged -- pass False
+    for the graph-only ablation (RL/run_ablation.py).
+    """
     if mode == "auto":
         routed_mode, _ = route_question(question)
     else:
         routed_mode = mode
     if routed_mode == "local":
-        return answer_local(question)
+        return answer_local(question, use_hybrid=use_hybrid)
     return answer_global(question)

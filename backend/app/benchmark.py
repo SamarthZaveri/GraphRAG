@@ -3,6 +3,18 @@ Runs the same benchmark question set against (a) GraphRAG and (b) vanilla
 vector RAG, then scores each answer against a reference answer using an
 LLM-judge rubric (0-5). This is the "provable advantage" comparison from
 the PRD.
+
+DIAGNOSTIC NOTE (added after the 12-corpus real run): `judge()` silently
+returns {"score_a": 0, "score_b": 0, ...} whenever the judge model's
+output can't be parsed as JSON -- indistinguishable from a genuine 0/5
+grade in the recorded results. `five9_longitudinal` scored 0.50/0.33 avg
+across both engines simultaneously in one run, which looks more like a
+parsing-failure pattern than genuine answer quality. Added warning prints
+below (no scoring behavior changed) so the next run makes this visible
+instead of silent -- if the warnings fire repeatedly on a corpus, that
+corpus's recorded reward is not trustworthy as-is and needs a real fix
+(e.g. raising judge max_tokens, or a retry-on-parse-failure loop) rather
+than being fed into bandit training.
 """
 from __future__ import annotations
 import json
@@ -45,7 +57,15 @@ def judge(question: str, reference: str, answer_a: str, answer_b: str) -> dict:
     )
     data = chat_json(config.JUDGE_MODEL, JUDGE_SYSTEM_PROMPT, prompt, max_tokens=400)
     if not data:
+        print(f"  [judge WARNING] unparseable/empty judge output for question "
+              f"{question[:70]!r} -- both scores defaulting to 0. This is a PARSING "
+              f"FAILURE, not necessarily a genuine 0/5 grade. If this fires often on "
+              f"one corpus, that corpus's recorded reward is not trustworthy as-is.")
         return {"score_a": 0, "score_b": 0, "rationale": "Judge model returned unparseable output."}
+    missing = [k for k in ("score_a", "score_b") if k not in data]
+    if missing:
+        print(f"  [judge WARNING] judge JSON parsed but missing keys {missing} for "
+              f"question {question[:70]!r} -- raw parsed data: {data!r}")
     return data
 
 

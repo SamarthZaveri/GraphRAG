@@ -1,8 +1,21 @@
 """
 Ingestion: chunk raw document text and extract (entity, relation, entity)
 triples from each chunk using a local Ollama model with a strict JSON schema.
+
+DIAGNOSTIC NOTE (added while investigating slow ingestion): per-chunk
+timing added to extract_from_chunk and a chunk-count summary added to
+extract_document, no behavior change. Ingestion times have grown a lot
+(15 min to 90+ min per corpus across different runs) and extraction is the
+dominant cost, but WHY wasn't measured -- could be call count (many
+chunks), per-call latency (slow generation), or Ollama serializing
+concurrent requests despite EXTRACTION_CONCURRENCY=4 (see config.py's own
+comment: this concurrency setting's real effect depends on Ollama's
+OLLAMA_NUM_PARALLEL server setting, which has never been confirmed set).
+This print output is what tells us which lever actually matters instead
+of guessing.
 """
 from __future__ import annotations
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import List
 
@@ -89,6 +102,7 @@ Rules:
 
 
 def extract_from_chunk(chunk: dict) -> ExtractionResult:
+    t0 = time.time()
     data = chat_json(
         config.EXTRACTION_MODEL, EXTRACTION_SYSTEM_PROMPT, chunk["text"], max_tokens=1500,
     )
@@ -107,6 +121,9 @@ def extract_from_chunk(chunk: dict) -> ExtractionResult:
         for t in data.get("triples", [])
         if isinstance(t, dict) and t.get("subject") and t.get("predicate") and t.get("object")
     ]
+    elapsed = time.time() - t0
+    print(f"    [extract] {chunk['chunk_id']} ({len(chunk['text'])} chars in) -> "
+          f"{len(entities)} entities, {len(triples)} triples ({elapsed:.1f}s)")
     return ExtractionResult(
         doc_id=chunk["doc_id"], chunk_id=chunk["chunk_id"],
         entities=entities, triples=triples,
@@ -138,8 +155,21 @@ def extract_document(doc_id: str, text: str) -> "tuple[list[dict], list[Extracti
 
     narrative_chunks = chunk_text(remaining_text, doc_id)
     if narrative_chunks:
+        print(f"  [extract_document] {doc_id}: {len(narrative_chunks)} narrative chunks to "
+              f"process at concurrency={config.EXTRACTION_CONCURRENCY} "
+              f"(model={config.EXTRACTION_MODEL})")
+        t0 = time.time()
         with ThreadPoolExecutor(max_workers=config.EXTRACTION_CONCURRENCY) as pool:
             llm_results = list(pool.map(extract_from_chunk, narrative_chunks))
+        elapsed = time.time() - t0
+        avg_per_chunk = elapsed / len(narrative_chunks)
+        print(f"  [extract_document] {doc_id}: {len(narrative_chunks)} chunks finished in "
+              f"{elapsed:.1f}s total ({avg_per_chunk:.1f}s/chunk average wall-clock at "
+              f"concurrency={config.EXTRACTION_CONCURRENCY}). Compare this average against the "
+              f"individual per-chunk times printed above: if wall-clock time is close to the SUM "
+              f"of individual chunk times rather than roughly 1/{config.EXTRACTION_CONCURRENCY} "
+              f"of it, Ollama is serializing requests despite the thread pool -- check "
+              f"OLLAMA_NUM_PARALLEL on the server side.")
         results.extend(llm_results)
 
     return table_chunks + narrative_chunks, results
