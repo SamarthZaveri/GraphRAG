@@ -17,4 +17,4 @@ from pathlib import Path
 BACKEND_ROOT = Path(__file__).parent.parent / "backend"
 sys.path.insert(0, str(BACKEND_ROOT))
 
-from backend.app.query_bandit import LinUCBBandit  # noqa: E402,F401
+from app.query_bandit import LinUCBBandit  # noqa: E402,F401

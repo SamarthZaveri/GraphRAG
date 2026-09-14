@@ -27,11 +27,11 @@ import traceback
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "backend"))
-from backend.app import config as backend_config, ollama_client  # noqa: E402
-from backend.app.extraction import extract_document  # noqa: E402
-from backend.app.graph_store import GraphStore  # noqa: E402
-from backend.app.community import build_community_summaries, save_summaries, load_modularity  # noqa: E402
-from backend.app import rgcn, vector_baseline, query_engine, benchmark as backend_benchmark  # noqa: E402
+from app import config as backend_config, ollama_client  # noqa: E402
+from app.extraction import extract_document  # noqa: E402
+from app.graph_store import GraphStore  # noqa: E402
+from app.community import build_community_summaries, save_summaries, load_modularity  # noqa: E402
+from app import rgcn, vector_baseline, query_engine, benchmark as backend_benchmark  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).parent))
 from features import extract_features, FEATURE_NAMES, build_query_context  # noqa: E402

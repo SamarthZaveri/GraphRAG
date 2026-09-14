@@ -33,7 +33,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "backend"))
-from backend.app import config as backend_config  # noqa: E402
+from app import config as backend_config  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).parent))
 from bandit import LinUCBBandit  # noqa: E402
