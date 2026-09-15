@@ -133,6 +133,7 @@ textarea, select, input { font-family: var(--sans); }
 .answer-body { white-space: pre-wrap; font-size: 14.5px; line-height: 1.6; margin-bottom: 14px; }
 .citation { border-left: 2px solid var(--border); padding: 6px 10px; margin-bottom: 6px; font-size: 12px; color: var(--text-dim); }
 .citation .doc { color: var(--brass); font-family: var(--mono); }
+.engine-reason { border-left: 2px solid var(--brass-dim); background: var(--panel-2); padding: 7px 10px; margin: -4px 0 12px; font-size: 12.5px; color: var(--text-dim); border-radius: 0 4px 4px 0; }
 .sample-qs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 22px; }
 .sample-q { font-size: 12.5px; padding: 5px 11px; border: 1px solid var(--border); border-radius: 20px; color: var(--text-dim); background: var(--panel); }
 .sample-q:hover { border-color: var(--brass); color: var(--text); }
@@ -200,7 +201,7 @@ table.bench-table th { color: var(--text-faint); font-weight: 500; font-size: 12
     </div>
 
     <div class="sidebar-footer">
-      <p>Local search walks 2 hops of the graph plus R-GCN-nearest entities, grounded in the original source text. Global search reads the community summaries most relevant to your question. The benchmark scores both against a vanilla vector-RAG baseline. Runs fully offline via a local Ollama model — no API key, nothing leaves your machine.</p>
+      <p>Local search walks 2 hops of the graph plus R-GCN-nearest entities, grounded in the original source text. Global search reads the community summaries most relevant to your question. On Auto, a trained contextual bandit picks GraphRAG or vector RAG per question — based on what kind of question it is and how the corpus is structured — rather than one fixed choice for the whole corpus. The benchmark scores both against a vanilla vector-RAG baseline. Runs fully offline via a local Ollama model — no API key, nothing leaves your machine.</p>
     </div>
   </aside>
 
@@ -494,7 +495,7 @@ async function renderAskTab() {
   container.innerHTML = `
     <div class="panel-header">
       <h2>Ask</h2>
-      <p>Ask a question. The engine (GraphRAG vs. vector RAG) is auto-selected based on this corpus's structure, or pick one manually.</p>
+      <p>Ask a question. On Auto, a trained router picks GraphRAG or vector RAG per question — not one fixed choice for the whole corpus — based on what kind of question it is and how the corpus is structured.</p>
     </div>
     <div class="sample-qs">${SAMPLE_QUESTIONS.map(q => `<button class="sample-q" data-q="${escapeHtml(q)}">${escapeHtml(q)}</button>`).join('')}</div>
     <div class="ask-form">
@@ -505,7 +506,7 @@ async function renderAskTab() {
       <label><input type="checkbox" id="ask-compare"> Compare vs. vector RAG</label>
       <label>Engine
         <select id="ask-engine">
-          <option value="auto" selected>Auto${analysis ? ` (recommends ${analysis.recommended_engine === 'graphrag' ? 'GraphRAG' : 'Vector RAG'})` : ''}</option>
+          <option value="auto" selected>Auto (per-question routing)</option>
           <option value="graphrag">GraphRAG</option>
           <option value="vector_rag">Vector RAG</option>
         </select>
@@ -518,7 +519,7 @@ async function renderAskTab() {
         </select>
       </label>
     </div>
-    ${analysis ? `<p class="dim-text small" id="router-reason">Router: ${escapeHtml(analysis.reason || '')}</p>` : ''}
+    ${analysis ? `<p class="dim-text small" id="router-reason">Corpus structure: ${escapeHtml(analysis.reason || '')} — the engine picked for each answer below is chosen per question, shown underneath it.</p>` : ''}
     <div id="ask-results"></div>
   `;
   container.querySelectorAll('.sample-q').forEach(b => b.onclick = () => {
@@ -533,7 +534,7 @@ async function renderAskTab() {
 
 function renderAnswer(title, badgeClass, resp) {
   const cites = (resp.citations || []).map(c => `<div class="citation"><span class="doc">${escapeHtml(c.doc_id)}</span> — ${escapeHtml((c.snippet||'').slice(0,180))}${(c.snippet||'').length>180?'…':''}</div>`).join('');
-  const engineNote = resp.engine_reason ? `<p class="dim-text small" style="margin-top:-6px;margin-bottom:10px;">${escapeHtml(resp.engine_reason)}</p>` : '';
+  const engineNote = resp.engine_reason ? `<p class="engine-reason">${escapeHtml(resp.engine_reason)}</p>` : '';
   return `
     <div class="answer-col">
       <h3>${title}</h3>
