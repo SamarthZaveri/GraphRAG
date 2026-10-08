@@ -149,6 +149,14 @@ def route_query(question: str) -> Tuple[str, str]:
         context = router_features.build_query_context(doc_features, category)
 
         bandit = LinUCBBandit.load(QUERY_BANDIT_PATH)
+        from .engines import ENGINE_NAMES
+        if set(bandit.arms) != set(ENGINE_NAMES) or bandit.context_dim != router_features.QUERY_CONTEXT_DIM:
+            return _fallback_to_corpus_analysis("fallback: retrain router for all three engines")
+        if (bandit.metadata.get("retrieval_version") != config.RETRIEVAL_VERSION
+                or bandit.metadata.get("answer_model") != config.ANSWER_MODEL
+                or bandit.metadata.get("extraction_model") != config.EXTRACTION_MODEL
+                or bandit.metadata.get("llm_backend") != config.LLM_BACKEND):
+            return _fallback_to_corpus_analysis("fallback: router model/retrieval configuration changed; retrain")
         # Serving time uses pure exploitation (predicted_reward), not
         # select_arm's UCB exploration bonus -- a live request isn't an
         # opportunity to explore, it needs the best current estimate.
@@ -156,7 +164,8 @@ def route_query(question: str) -> Tuple[str, str]:
         engine = max(rewards, key=rewards.get)
         reason = (f"question classified as '{category}'; predicted reward "
                   f"graphrag={rewards.get('graphrag', 0):.2f}, "
-                  f"vector_rag={rewards.get('vector_rag', 0):.2f}")
+                  f"vector_rag={rewards.get('vector_rag', 0):.2f}, "
+                  f"hybrid_rag={rewards.get('hybrid_rag', 0):.2f}")
         return engine, reason
     except Exception:
         traceback.print_exc()

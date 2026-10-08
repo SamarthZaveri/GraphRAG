@@ -1,13 +1,9 @@
 #!/usr/bin/env python3
-"""
-Standalone CLI: ingest the bundled sample documents, build the graph +
-community summaries, run the benchmark, and print a report. Useful for a
-quick end-to-end sanity check without starting the FastAPI server / frontend.
-
-Usage:
-    ollama serve                          # if not already running
-    ollama pull qwen2.5:3b-instruct       # once
-    python run_pipeline.py
+"""Ingest bundled sample filings and benchmark all three engines.
+Configure HF_TOKEN and the hosted API models (or optional Ollama) first.
+Run from the project root: python backend/run_pipeline.py
+This replaces active graph/vector indexes; generated questions must exist
+at the configured BENCHMARK_QUESTIONS_PATH.
 """
 import sys
 import time
@@ -24,9 +20,7 @@ from app import vector_baseline, benchmark
 
 def main():
     if not ollama_client.is_available():
-        print(f"ERROR: could not reach Ollama at {config.OLLAMA_HOST}.")
-        print("Start it with `ollama serve` and make sure you've run "
-              f"`ollama pull {config.EXTRACTION_MODEL}`.")
+        print("ERROR: LLM endpoint unavailable. Check HF_TOKEN/API settings or your Ollama server.")
         sys.exit(1)
 
     print("=== Ledger: GraphRAG pipeline ===\n")
@@ -72,7 +66,8 @@ def main():
     summary = benchmark.run_benchmark()
     print(f"\n=== Benchmark results ===")
     print(f"GraphRAG avg score:   {summary.graphrag_avg:.2f} / 5")
-    print(f"Vector RAG avg score: {summary.vector_rag_avg:.2f} / 5\n")
+    print(f"Vector RAG avg score: {summary.vector_rag_avg:.2f} / 5")
+    print(f"BM25 + Vector avg score: {summary.hybrid_rag_avg:.2f} / 5\n")
     for r in summary.results:
         print(f"[{r.category}] {r.question_id}: GraphRAG={r.graphrag_score} "
               f"VectorRAG={r.vector_rag_score}  -- {r.judge_rationale}")

@@ -1,210 +1,141 @@
-"""
-For each corpus folder under RL/data/corpora/<name>/*.txt: ingest it through
-the SAME backend pipeline the main app uses (extraction, graph construction,
-community detection, R-GCN training), generate a benchmark for it, run both
-GraphRAG and vector RAG against that benchmark, judge the answers, and
-record one (context_features, reward_graphrag, reward_vector_rag) row per
-corpus to RL/data/experiment_results.jsonl.
-
-This deliberately reuses backend/app/* rather than reimplementing ingestion
--- if the real pipeline has a bug, we want the experiment to see it too,
-not evaluate against a simplified stand-in.
-
-Needs a running Ollama instance (same requirement as the main app). This is
-the slow, real part: expect each corpus to take a few minutes depending on
-your model and hardware.
-
-Usage:
-    python run_experiments.py                  # all corpora under data/corpora/
-    python run_experiments.py --corpus semiconductors_2025   # just one
-"""
+"""Evaluate three retrieval engines on a saved, balanced benchmark."""
 from __future__ import annotations
 import argparse
 import json
+import os
 import sys
-import time
 import traceback
 from pathlib import Path
+from collections import Counter
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "backend"))
-from app import config as backend_config, ollama_client  # noqa: E402
-from app.extraction import extract_document  # noqa: E402
-from app.graph_store import GraphStore  # noqa: E402
-from app.community import build_community_summaries, save_summaries, load_modularity  # noqa: E402
-from app import rgcn, vector_baseline, query_engine, benchmark as backend_benchmark  # noqa: E402
-
-sys.path.insert(0, str(Path(__file__).parent))
-from features import extract_features, FEATURE_NAMES, build_query_context  # noqa: E402
-from generate_benchmark import generate_benchmark_for_corpus  # noqa: E402
-
-CORPORA_DIR = Path(__file__).parent / "data" / "corpora"
-RESULTS_PATH = Path(__file__).parent / "data" / "experiment_results.jsonl"
-# NEW: per-QUESTION rows, for the query-level engine router. Each row is one
-# (corpus, question) pair instead of one corpus-level average -- this is
-# what turns ~12 corpus-level examples into ~70+ real training examples for
-# the bandit, using data this script was already generating and previously
-# discarding (the per-question category and score).
-QUERY_RESULTS_PATH = Path(__file__).parent / "data" / "query_results.jsonl"
+ROOT = Path(__file__).resolve().parent
+# Resolve experiment storage before any backend import initializes its paths.
+bootstrap = argparse.ArgumentParser(add_help=False)
+bootstrap.add_argument("--output-dir", type=Path, default=ROOT / "data" / "three_engine")
+bootstrap.add_argument("--state-dir", type=Path)
+early, _ = bootstrap.parse_known_args()
+OUTPUT_DIR = early.output_dir.resolve()
+os.environ["LEDGER_DATA_DIR"] = str((early.state_dir or OUTPUT_DIR / "runtime").resolve())
+sys.path.insert(0, str(ROOT.parent / "backend"))
+from app import config, benchmark, engines, rgcn, vector_baseline
+from app.main import _ingest_documents
+from app.graph_store import GraphStore
+from app.router_features import extract_features, build_query_context
+from generate_benchmark import generate_benchmark_for_corpus, corpus_fingerprint, GENERATOR_VERSION, CATEGORIES
 
 
-def ingest_corpus(corpus_dir: Path):
-    """Runs the real ingestion pipeline for one corpus, in an isolated
-    in-memory GraphStore + a corpus-scoped Chroma collection, so experiments
-    don't collide with each other or with the main app's state."""
-    doc_paths = sorted(corpus_dir.glob("*.txt"))
-    if not doc_paths:
-        raise FileNotFoundError(f"No .txt documents found in {corpus_dir}")
-
-    store = GraphStore()
-    vector_baseline.reset_collection()
-
-    doc_texts, doc_ids = [], []
-    for path in doc_paths:
-        doc_id = path.stem
-        text = path.read_text(errors="ignore")
-        doc_texts.append(text)
-        doc_ids.append(doc_id)
-
-        chunks, extraction_results = extract_document(doc_id, text)
-        store.ingest_document_chunks(doc_id, chunks, extraction_results)
-        vector_baseline.ingest_document(doc_id, text)
-
-    store.save()  # query_engine/vector_baseline read graph state from disk
-    summaries = build_community_summaries(store)
-    save_summaries(summaries)
-    rgcn_result = rgcn.train_and_save(store.graph)
-    # NOTE: rgcn_result / val_auc is still computed and the R-GCN is still
-    # trained and saved here -- the query engine / main app may still use
-    # the trained embeddings for retrieval. It's only DROPPED from the
-    # router's feature vector below (see features.py), because rgcn_val_auc
-    # as a router feature was found to saturate uninformatively across
-    # almost every corpus in the 12-corpus real run.
-
-    return store, doc_texts, doc_ids, rgcn_result
-
-
-def run_one_corpus(corpus_dir: Path):
-    print(f"\n=== {corpus_dir.name} ===")
-    t0 = time.time()
-    store, doc_texts, doc_ids, rgcn_result = ingest_corpus(corpus_dir)
-    print(f"  ingested {len(doc_ids)} docs -> {store.graph.number_of_nodes()} nodes, "
-          f"{store.graph.number_of_edges()} edges ({time.time()-t0:.0f}s)")
-
-    modularity_info = load_modularity()
-    val_auc = rgcn_result.get("val_auc") if rgcn_result else None
-    # modularity_info / val_auc are still passed through for signature
-    # compatibility but are IGNORED inside extract_features now -- see
-    # features.py's revision note. Router features are recomputed there
-    # directly from the graph's cross-document structure.
-    features = extract_features(store, modularity_info.get("modularity"), val_auc)
-    print(f"  features: {dict(zip(FEATURE_NAMES, features.round(3)))}")
-
-    print("  generating benchmark questions...")
-    questions = generate_benchmark_for_corpus(doc_texts, doc_ids)
+def load_benchmark(corpus_dir, benchmark_dir, target, allow_unbalanced=False, regenerate=False):
+    paths = sorted(corpus_dir.glob("*.txt"))
+    if not paths:
+        raise ValueError(f"No .txt files in {corpus_dir}")
+    texts = [p.read_text(encoding="utf-8", errors="ignore") for p in paths]
+    ids = [p.stem for p in paths]
+    fingerprint = corpus_fingerprint(texts, ids)
+    path = benchmark_dir / (corpus_dir.name + ".json")
+    if path.exists() and not regenerate:
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        if saved.get("corpus_fingerprint") != fingerprint or saved.get("per_category") != target or saved.get("generator_version") != GENERATOR_VERSION:
+            raise ValueError(f"Stale benchmark {path}; use --regenerate-questions explicitly")
+        questions = saved["questions"]
+    else:
+        questions = generate_benchmark_for_corpus(texts, ids, target, allow_unbalanced)
+        saved = {"corpus": corpus_dir.name, "corpus_fingerprint": fingerprint, "per_category": target,
+                 "generator_version": GENERATOR_VERSION, "question_model": config.QUESTION_MODEL,
+                 "reference_verifier_model": config.JUDGE_MODEL, "questions": questions}
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(saved, indent=2, ensure_ascii=False), encoding="utf-8")
+    counts = Counter(q["category"] for q in questions)
+    if not allow_unbalanced and any(counts[c] != target for c in CATEGORIES):
+        raise ValueError(f"Cached benchmark unbalanced: {dict(counts)}")
     if not questions:
-        print("  WARNING: no questions generated, skipping this corpus")
-        return None, []
-    print(f"  {len(questions)} questions generated")
+        raise ValueError("Empty benchmark")
+    return paths, saved
 
-    graphrag_scores, vector_scores = [], []
-    query_rows = []
-    for i, q in enumerate(questions, 1):
-        graphrag_resp = query_engine.answer_question(q["question"], mode="auto")
-        vector_resp = vector_baseline.answer_question(q["question"])
-        verdict = backend_benchmark.judge(q["question"], q["reference_answer"],
-                                           graphrag_resp.answer, vector_resp.answer)
-        score_graphrag = float(verdict.get("score_a", 0))
-        score_vector = float(verdict.get("score_b", 0))
-        graphrag_scores.append(score_graphrag)
-        vector_scores.append(score_vector)
-        # DIAGNOSTIC (added while investigating the five9_longitudinal /
-        # semiconductors_2025 low-score anomaly): print each question's
-        # reference answer, both engines' scores, and the judge's
-        # rationale. Previously only the aggregate average was visible,
-        # which made it impossible to tell "both engines are genuinely
-        # bad here" apart from "the reference answer itself is wrong,"
-        # e.g. from truncated per-doc context in generate_benchmark.py.
-        print(f"    Q{i}: {q['question'][:90]!r}")
-        print(f"      reference: {q['reference_answer'][:150]!r}")
-        print(f"      scores: graphrag={verdict.get('score_a')} vector={verdict.get('score_b')} "
-              f"-- {verdict.get('rationale', '')[:180]}")
 
-        # NEW: per-question row for the query-level bandit. category comes
-        # straight from generate_benchmark_for_corpus's own labeling --
-        # no extra classification call needed here, since the generator
-        # already knows what kind of question it wrote. (query_engine.
-        # classify_query() is the equivalent call used at live inference
-        # time on real, unlabeled user questions, not here.)
-        category = q.get("category", "local")
-        query_context = build_query_context(features, category)
-        query_rows.append({
-            "corpus": corpus_dir.name,
-            "question": q["question"],
-            "category": category,
-            "context": query_context.tolist(),
-            "reward_graphrag": score_graphrag / 5.0,
-            "reward_vector_rag": score_vector / 5.0,
-        })
+def run_one_corpus(corpus_dir, args):
+    print(f"\nCorpus: {corpus_dir.name}")
+    paths, saved = load_benchmark(corpus_dir, args.benchmark_dir, args.per_category,
+                                  args.allow_unbalanced, args.regenerate_questions)
+    if args.questions_only:
+        return
+    marker = config.DATA_DIR / "ingestion_manifest.json"
+    expected = {"corpus_fingerprint": saved["corpus_fingerprint"], "extraction_model": config.EXTRACTION_MODEL,
+                "retrieval_version": config.RETRIEVAL_VERSION}
+    if args.reuse_index:
+        if not marker.exists() or json.loads(marker.read_text()) != expected:
+            raise ValueError("--reuse-index requires matching corpus, extraction model and retrieval version")
+    else:
+        _ingest_documents(paths, mode="replace")
+        marker.write_text(json.dumps(expected), encoding="utf-8")
+    store = GraphStore.load()
+    features = extract_features(store)
+    records, query_rows, failures = [], [], []
+    meta = {**benchmark.metadata(), "corpus_fingerprint": saved["corpus_fingerprint"],
+            "generator_version": saved["generator_version"], "benchmark_question_model": saved["question_model"],
+            "benchmark_verifier_model": saved["reference_verifier_model"]}
+    for q in saved["questions"]:
+        print(f"  {q['id']} [{q['category']}]: {q['question']}")
+        try:
+            responses, scores = benchmark.evaluate_question(q)
+        except Exception as error:
+            print(f"  FAILED: {error}")
+            failures.append({"question_id": q["id"], "reason": str(error)})
+            continue
+        rewards = {"reward_"+e: scores[e]["score"]/5.0 for e in engines.ENGINE_NAMES}
+        query_rows.append({"corpus": corpus_dir.name, "question_id": q["id"], "question": q["question"],
+                           "category": q["category"], "context": build_query_context(features, q["category"]).tolist(),
+                           **rewards, "metadata": meta})
+        records.append({**q, "answers": {e: r.model_dump() for e, r in responses.items()}, "judge": scores})
+        print("  " + ", ".join(f"{e}={v['score']:.1f}/5" for e, v in scores.items()))
+    if not query_rows:
+        raise ValueError("No valid evaluated questions; no training rewards recorded")
+    aggregate = {"corpus": corpus_dir.name, "num_docs": len(paths), "features": features.tolist(),
+                 "num_questions": len(query_rows), "metadata": meta,
+                 **{"reward_"+e: sum(r["reward_"+e] for r in query_rows)/len(query_rows) for e in engines.ENGINE_NAMES}}
+    destination = OUTPUT_DIR / "corpora" / (corpus_dir.name + ".json")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(json.dumps({"aggregate": aggregate, "query_rows": query_rows,
+        "results": records, "failed_questions": failures}, indent=2, ensure_ascii=False), encoding="utf-8")
+    rebuild_training_files()
+    if failures:
+        raise ValueError(f"{len(failures)} questions failed; valid results saved, run is incomplete")
 
-    reward_graphrag = sum(graphrag_scores) / len(graphrag_scores) / 5.0  # normalize 0-5 -> 0-1
-    reward_vector = sum(vector_scores) / len(vector_scores) / 5.0
-    print(f"  GraphRAG avg: {reward_graphrag*5:.2f}/5, Vector RAG avg: {reward_vector*5:.2f}/5 "
-          f"({time.time()-t0:.0f}s total)")
 
-    corpus_row = {
-        "corpus": corpus_dir.name,
-        "num_docs": len(doc_ids),
-        "features": features.tolist(),
-        "reward_graphrag": reward_graphrag,
-        "reward_vector_rag": reward_vector,
-        "num_questions": len(questions),
-    }
-    return corpus_row, query_rows
+def rebuild_training_files():
+    saved = [json.loads(p.read_text(encoding="utf-8")) for p in sorted((OUTPUT_DIR / "corpora").glob("*.json"))]
+    for name, rows in (("experiment_results.jsonl", [s["aggregate"] for s in saved]),
+                       ("query_results.jsonl", [r for s in saved for r in s["query_rows"]])):
+        (OUTPUT_DIR / name).write_text("".join(json.dumps(r)+"\n" for r in rows), encoding="utf-8")
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--corpus", default=None, help="Run just one corpus by folder name")
+    parser = argparse.ArgumentParser(description=__doc__, parents=[bootstrap])
+    parser.add_argument("--corpus", help="Single corpus folder name")
+    parser.add_argument("--corpora-dir", type=Path, default=ROOT / "data" / "corpora")
+    parser.add_argument("--benchmark-dir", type=Path, default=ROOT / "data" / "balanced_benchmarks")
+    parser.add_argument("--per-category", type=int, default=config.QA_PER_CATEGORY)
+    parser.add_argument("--allow-unbalanced", action="store_true")
+    parser.add_argument("--regenerate-questions", action="store_true")
+    parser.add_argument("--questions-only", action="store_true")
+    parser.add_argument("--reuse-index", action="store_true")
     args = parser.parse_args()
-
-    if not ollama_client.is_available():
-        print(f"ERROR: can't reach Ollama at {backend_config.OLLAMA_HOST}. Start it first.")
-        sys.exit(1)
-
-    corpus_dirs = sorted(d for d in CORPORA_DIR.iterdir() if d.is_dir())
-    if args.corpus:
-        corpus_dirs = [d for d in corpus_dirs if d.name == args.corpus]
-        if not corpus_dirs:
-            print(f"No corpus folder named {args.corpus!r} under {CORPORA_DIR}")
-            sys.exit(1)
-
-    if not corpus_dirs:
-        print(f"No corpus folders found under {CORPORA_DIR}. Run fetch_corpora.py first.")
-        sys.exit(1)
-
-    RESULTS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    results = []
-    all_query_rows = []
-    for corpus_dir in corpus_dirs:
+    if not args.corpora_dir.exists():
+        parser.error("Corpus directory missing; run fetch_corpora.py or supply --corpora-dir")
+    folders = sorted(p for p in args.corpora_dir.iterdir() if p.is_dir() and (not args.corpus or p.name == args.corpus))
+    if not folders:
+        parser.error("No matching corpora")
+    if args.reuse_index and len(folders) != 1:
+        parser.error("--reuse-index requires a single --corpus")
+    failed = []
+    for folder in folders:
         try:
-            corpus_row, query_rows = run_one_corpus(corpus_dir)
-            if corpus_row:
-                results.append(corpus_row)
-                all_query_rows.extend(query_rows)
+            run_one_corpus(folder, args)
         except Exception:
-            print(f"  FAILED on {corpus_dir.name}:")
+            failed.append(folder.name)
             traceback.print_exc()
-
-    with open(RESULTS_PATH, "a") as f:
-        for r in results:
-            f.write(json.dumps(r) + "\n")
-
-    with open(QUERY_RESULTS_PATH, "a") as f:
-        for r in all_query_rows:
-            f.write(json.dumps(r) + "\n")
-
-    print(f"\n{len(results)} corpora completed, appended to {RESULTS_PATH}")
-    print(f"{len(all_query_rows)} per-question rows appended to {QUERY_RESULTS_PATH}")
+    if failed:
+        raise SystemExit(f"Incomplete corpora: {', '.join(failed)}")
+    print(f"Completed. Benchmarks: {args.benchmark_dir}; results: {OUTPUT_DIR}; state: {config.DATA_DIR}")
 
 
 if __name__ == "__main__":

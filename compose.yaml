@@ -1,0 +1,12 @@
+services:
+  ledger:
+    build: .
+    env_file: .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - ledger-data:/data
+      - ./backend/data/sample_docs:/workspace/backend/data/sample_docs:ro
+    restart: unless-stopped
+volumes:
+  ledger-data:

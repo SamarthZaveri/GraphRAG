@@ -39,9 +39,9 @@ sys.path.insert(0, str(Path(__file__).parent))
 from bandit import LinUCBBandit  # noqa: E402
 from features import QUERY_CONTEXT_DIM  # noqa: E402
 
-RESULTS_PATH = Path(__file__).parent / "data" / "query_results.jsonl"
+RESULTS_PATH = Path(__file__).parent / "data" / "three_engine" / "query_results.jsonl"
 POLICY_PATH = backend_config.GRAPH_STATE_DIR / "query_bandit.json"
-ARMS = ["graphrag", "vector_rag"]
+ARMS = ["graphrag", "vector_rag", "hybrid_rag"]
 
 
 def load_results() -> list[dict]:
@@ -51,6 +51,22 @@ def load_results() -> list[dict]:
             f"(it now writes this file automatically alongside experiment_results.jsonl)"
         )
     rows = [json.loads(line) for line in RESULTS_PATH.read_text().splitlines() if line.strip()]
+    if not rows:
+        raise ValueError("No training rows")
+    signatures = set()
+    for row in rows:
+        meta = row.get("metadata", {})
+        if meta.get("retrieval_version") != backend_config.RETRIEVAL_VERSION:
+            raise ValueError("Historical/incompatible retrieval rewards: run fresh three-engine experiments")
+        if len(row.get("context", [])) != QUERY_CONTEXT_DIM:
+            raise ValueError("Invalid context dimension")
+        for arm in ARMS:
+            reward = row.get("reward_"+arm)
+            if isinstance(reward, bool) or not isinstance(reward, (int, float)) or not np.isfinite(reward) or not 0 <= reward <= 1:
+                raise ValueError(f"Missing/invalid reward for {arm}")
+        signatures.add(tuple(meta.get(k) for k in ("answer_model", "judge_model", "extraction_model", "llm_backend")))
+    if len(signatures) != 1:
+        raise ValueError("Mixed model configurations: train from one experiment output directory")
     if len(rows) < 20:
         print(f"WARNING: only {len(rows)} per-question rows recorded. This is more than the "
               f"old 12-corpus set, but still treat results as directional at this scale, not a "
@@ -67,7 +83,7 @@ def run_training(rows: list[dict], alpha: float, seed: int):
     for idx in order:
         row = rows[idx]
         x = np.array(row["context"])
-        true_reward = {"graphrag": row["reward_graphrag"], "vector_rag": row["reward_vector_rag"]}
+        true_reward = {arm: row["reward_"+arm] for arm in ARMS}
         best_arm = max(true_reward, key=true_reward.get)
 
         chosen_arm, scores = bandit.select_arm(x)
@@ -77,17 +93,27 @@ def run_training(rows: list[dict], alpha: float, seed: int):
 
         log.append({
             "corpus": row["corpus"], "question": row["question"], "category": row["category"],
-            "chosen": chosen_arm, "best": best_arm, "correct": chosen_arm == best_arm,
+            "chosen": chosen_arm, "best": best_arm, "correct": true_reward[chosen_arm] == true_reward[best_arm],
             "regret": regret,
         })
     return bandit, log
+
+
+def global_paths(results, output):
+    global RESULTS_PATH, POLICY_PATH
+    RESULTS_PATH, POLICY_PATH = results, output
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--alpha", type=float, default=1.0, help="LinUCB exploration parameter")
     parser.add_argument("--seeds", type=int, default=10, help="number of random shuffles to average over")
+    parser.add_argument("--results", type=Path, default=RESULTS_PATH)
+    parser.add_argument("--output", type=Path, default=POLICY_PATH)
     args = parser.parse_args()
+    if args.seeds < 1:
+        parser.error("--seeds must be positive")
+    global_paths(args.results, args.output)
 
     rows = load_results()
     print(f"Training on {len(rows)} recorded (corpus, question) rows, "
@@ -132,13 +158,13 @@ def main():
         rewards = {arm: final_bandit.predicted_reward(arm, median_context) for arm in ARMS}
         best = max(rewards, key=rewards.get)
         print(f"  {cat:12s} graphrag={rewards['graphrag']:.3f}  vector_rag={rewards['vector_rag']:.3f}"
-              f"  -> {best}")
+              f"  hybrid_rag={rewards['hybrid_rag']:.3f} -> {best}")
 
     POLICY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    final_bandit.metadata = rows[0]["metadata"]
     final_bandit.save(POLICY_PATH)
     print(f"\nTrained query-level policy saved to {POLICY_PATH}")
-    print("(this is the exact path corpus_router.route_query() reads at serving time -- "
-          "no manual copy step needed, just start/restart the backend)")
+    print("Default output is the app policy path; custom --output paths must be copied there for serving.")
 
     if len(rows) < 40:
         print(f"\nNOTE: trained on {len(rows)} question-level rows. Read accuracy/regret and "

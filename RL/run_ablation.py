@@ -1,36 +1,17 @@
 """
-ABLATION: graph-only GraphRAG vs vector RAG, same questions for both.
+Standalone graph-only GraphRAG vs vector RAG evaluation.
 
-Why this exists: GraphRAG's local search has always pulled in the same
-vector-similarity chunks vector RAG uses, as a "hybrid grounding" safety
-net (see query_engine.py). That means every GraphRAG-vs-vector-RAG number
-collected so far in this project wasn't really testing graph retrieval
-against vector retrieval -- it was testing (graph + vector) against
-(vector alone), which structurally favors GraphRAG regardless of whether
-its actual graph traversal is any good. This script isolates that: it
-calls query_engine.answer_question(..., use_hybrid=False) so GraphRAG
-answers using ONLY graph-derived facts and chunks, nothing else, and
-compares that against vector RAG (unchanged -- it was already vector-only)
-on the exact same question set.
+GraphRAG now uses graph-derived facts/chunks or community summaries by
+ default, so this runner uses the same retrieval behavior as the standard
+experiments. It retains separate ablation_results.jsonl output and does
+not append rewards to the router-training files. Both engines answer the
+same generated questions within each run.
 
-This is a diagnostic, not a replacement for run_experiments.py / the
-query-level router training data -- it doesn't write to
-experiment_results.jsonl or query_results.jsonl, so it can't accidentally
-corrupt the router's training data with numbers from a deliberately
-handicapped GraphRAG. Results go to a separate file, ablation_results.jsonl.
-
-Same questions for both engines is achieved the straightforward way: one
-generate_benchmark_for_corpus() call per corpus produces one question set,
-and BOTH engines answer every question in it -- there's no separate
-question generation per engine.
-
-Ingestion for each corpus should be fast on a re-run of documents already
-processed in a prior session, thanks to the extraction cache (see
-extraction.py) -- only the answer/judge stage needs to run fresh, since
-that's what this ablation actually changes.
+Like run_experiments.py, ingestion overwrites the backend's active graph
+and vector state. Historical ablation rows predate the default change.
 
 Usage:
-    python run_ablation.py                       # all corpora
+    python run_ablation.py
     python run_ablation.py --corpus five9_longitudinal
 """
 from __future__ import annotations
@@ -105,8 +86,7 @@ def run_one_corpus(corpus_dir: Path) -> list[dict]:
 
     rows = []
     for i, q in enumerate(questions, 1):
-        # The only change from run_experiments.py: use_hybrid=False.
-        graphrag_resp = query_engine.answer_question(q["question"], mode="auto", use_hybrid=False)
+        graphrag_resp = query_engine.answer_question(q["question"], mode="auto")
         vector_resp = vector_baseline.answer_question(q["question"])
         verdict = backend_benchmark.judge(q["question"], q["reference_answer"],
                                            graphrag_resp.answer, vector_resp.answer)

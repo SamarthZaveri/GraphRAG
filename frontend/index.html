@@ -127,7 +127,7 @@ textarea, select, input { font-family: var(--sans); }
 .ask-form textarea { flex: 1; background: var(--panel); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 11px 13px; font-size: 14.5px; resize: vertical; min-height: 46px; }
 .ask-controls { display: flex; align-items: center; gap: 16px; margin-bottom: 14px; font-size: 13px; color: var(--text-dim); flex-wrap: wrap; }
 .ask-controls select { background: var(--panel); border: 1px solid var(--border); color: var(--text); border-radius: 5px; padding: 5px 8px; }
-.compare-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.compare-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 18px; }
 .answer-col h3 { font-size: 15px; margin-bottom: 4px; }
 .answer-col .mode-badge { font-size: 11.5px; margin-bottom: 12px; }
 .answer-body { white-space: pre-wrap; font-size: 14.5px; line-height: 1.6; margin-bottom: 14px; }
@@ -148,7 +148,7 @@ textarea, select, input { font-family: var(--sans); }
    (teal-green vs slate-blue) reserved ONLY for comparing the two systems,
    deliberately separate from the brass UI accent so "primary action" and
    "which system is this" never look like the same signal */
-.bench-summary { display: flex; gap: 30px; margin-bottom: 24px; }
+.bench-summary { display: flex; flex-wrap: wrap; gap: 30px; margin-bottom: 24px; }
 .bench-score { text-align: center; }
 .bench-score .num { font-family: var(--serif); font-size: 40px; font-weight: 700; }
 .bench-score.graphrag .num { color: var(--graph); }
@@ -201,7 +201,7 @@ table.bench-table th { color: var(--text-faint); font-weight: 500; font-size: 12
     </div>
 
     <div class="sidebar-footer">
-      <p>Local search walks 2 hops of the graph plus R-GCN-nearest entities, grounded in the original source text. Global search reads the community summaries most relevant to your question. On Auto, a trained contextual bandit picks GraphRAG or vector RAG per question — based on what kind of question it is and how the corpus is structured — rather than one fixed choice for the whole corpus. The benchmark scores both against a vanilla vector-RAG baseline. Runs fully offline via a local Ollama model — no API key, nothing leaves your machine.</p>
+      <p>GraphRAG retrieves graph neighborhoods or community summaries without vector-chunk fallback. Vector RAG retrieves semantic matches. BM25 + Vector combines keyword and semantic rankings. Auto uses a trained three-engine router when available. Language models use the configured hosted API or optional Ollama server.</p>
     </div>
   </aside>
 
@@ -214,7 +214,7 @@ table.bench-table th { color: var(--text-faint); font-weight: 500; font-size: 12
 </div>
 
 <script>
-const API_BASE = (localStorage.getItem('ledger_api_base') || 'http://localhost:8000') + '/api';
+const API_BASE = (localStorage.getItem('ledger_api_base') || (location.protocol === 'file:' ? 'http://localhost:8000' : location.origin)) + '/api';
 
 const state = { status: null, ingesting: false, tab: 'graph', network: null, ingestMode: 'add' };
 
@@ -277,7 +277,7 @@ function renderSidebar() {
 
   warnEl.innerHTML = '';
   if (s && !s.ollama_available) {
-    warnEl.appendChild(el(`<p class="warn-text">Can't reach Ollama at ${escapeHtml(s.ollama_host)}. Run <span class="mono">ollama serve</span> and <span class="mono">ollama pull ${escapeHtml(s.configured_models.extraction)}</span>, then reload.</p>`));
+    warnEl.appendChild(el(`<p class="warn-text">The configured ${escapeHtml(s.llm_backend || "LLM")} endpoint is unavailable. Check API credentials/model access or your Ollama server.</p>`));
   } else if (!s) {
     warnEl.appendChild(el(`<p class="warn-text">Can't reach the Ledger backend. Is <span class="mono">uvicorn app.main:app</span> running on port 8000?</p>`));
   }
@@ -495,7 +495,7 @@ async function renderAskTab() {
   container.innerHTML = `
     <div class="panel-header">
       <h2>Ask</h2>
-      <p>Ask a question. On Auto, a trained router picks GraphRAG or vector RAG per question — not one fixed choice for the whole corpus — based on what kind of question it is and how the corpus is structured.</p>
+      <p>Ask a question. On Auto, a trained router picks GraphRAG, vector RAG, or BM25 + vector retrieval per question — not one fixed choice for the whole corpus — based on what kind of question it is and how the corpus is structured.</p>
     </div>
     <div class="sample-qs">${SAMPLE_QUESTIONS.map(q => `<button class="sample-q" data-q="${escapeHtml(q)}">${escapeHtml(q)}</button>`).join('')}</div>
     <div class="ask-form">
@@ -509,6 +509,7 @@ async function renderAskTab() {
           <option value="auto" selected>Auto (per-question routing)</option>
           <option value="graphrag">GraphRAG</option>
           <option value="vector_rag">Vector RAG</option>
+          <option value="hybrid_rag">BM25 + Vector</option>
         </select>
       </label>
       <label>Mode
@@ -563,14 +564,15 @@ async function runAsk() {
       resultsEl.innerHTML = `<div class="compare-grid">
         ${renderAnswer('GraphRAG', 'emerald', res.graphrag)}
         ${renderAnswer('Vector RAG (baseline)', 'vector', res.vector_rag)}
+        ${res.hybrid_rag ? renderAnswer('BM25 + Vector', 'vector', res.hybrid_rag) : ''}
       </div>`;
     } else {
       const res = await api('/query', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ question, mode, engine }),
       });
-      const title = res.engine_used === 'vector_rag' ? 'Vector RAG' : 'GraphRAG';
-      const badge = res.engine_used === 'vector_rag' ? 'vector' : 'emerald';
+      const title = ({graphrag:'GraphRAG', vector_rag:'Vector RAG', hybrid_rag:'BM25 + Vector'})[res.engine_used] || 'GraphRAG';
+      const badge = res.engine_used === 'graphrag' ? 'emerald' : 'vector';
       resultsEl.innerHTML = `<div class="card">${renderAnswer(title, badge, res)}</div>`;
     }
   } catch (e) {
@@ -617,7 +619,7 @@ async function renderBenchmarkTab() {
   container.innerHTML = `
     <div class="panel-header">
       <h2>Benchmark</h2>
-      <p>Runs the same fixed question set against GraphRAG and vector RAG, then scores each answer 0–5 against a reference answer using an LLM judge.</p>
+      <p>Runs the same fixed question set against GraphRAG, vector RAG, and BM25 + vector retrieval, then scores each answer 0–5 against a reference answer using an LLM judge.</p>
     </div>
     <button class="btn primary" id="run-bench-btn">Run benchmark</button>
     <div id="bench-results" style="margin-top:22px;"></div>
@@ -633,9 +635,10 @@ function renderBenchResults(summary) {
   const resultsEl = document.getElementById('bench-results');
   const catBars = {};
   summary.results.forEach(r => {
-    catBars[r.category] = catBars[r.category] || { g: [], v: [] };
+    catBars[r.category] = catBars[r.category] || { g: [], v: [], h: [] };
     catBars[r.category].g.push(r.graphrag_score);
     catBars[r.category].v.push(r.vector_rag_score);
+    if (r.hybrid_rag_score != null) catBars[r.category].h.push(r.hybrid_rag_score);
   });
   const avg = arr => arr.reduce((a,b)=>a+b,0) / arr.length;
 
@@ -643,7 +646,9 @@ function renderBenchResults(summary) {
     <div class="bench-summary">
       <div class="bench-score graphrag"><div class="num">${summary.graphrag_avg.toFixed(2)}</div><div class="label">GraphRAG avg / 5</div></div>
       <div class="bench-score vector"><div class="num">${summary.vector_rag_avg.toFixed(2)}</div><div class="label">Vector RAG avg / 5</div></div>
+      ${summary.hybrid_rag_avg != null ? `<div class="bench-score vector"><div class="num">${summary.hybrid_rag_avg.toFixed(2)}</div><div class="label">BM25 + Vector avg / 5</div></div>` : ''}
     </div>
+    ${summary.failed_questions?.length ? `<p class="error-text">${summary.failed_questions.length} questions failed and were excluded from averages.</p>` : ''}
     <div class="card" style="margin-bottom:22px;">
       ${Object.entries(catBars).map(([cat, v]) => `
         <div class="bar-row">
@@ -652,11 +657,12 @@ function renderBenchResults(summary) {
           <span style="width:30px;">${avg(v.g).toFixed(1)}</span>
           <div class="bar-track"><div class="bar-fill vector" style="width:${avg(v.v)/5*100}%"></div></div>
           <span style="width:30px;">${avg(v.v).toFixed(1)}</span>
+          ${v.h.length ? `<span class="small">BM25+Vector: ${avg(v.h).toFixed(1)}</span>` : ''}
         </div>
       `).join('')}
     </div>
     <table class="bench-table">
-      <thead><tr><th>Question</th><th>Category</th><th>GraphRAG</th><th>Vector RAG</th><th>Judge notes</th></tr></thead>
+      <thead><tr><th>Question</th><th>Category</th><th>GraphRAG</th><th>Vector RAG</th><th>BM25 + Vector</th><th>Judge notes</th></tr></thead>
       <tbody>
         ${summary.results.map(r => `
           <tr>
@@ -664,6 +670,7 @@ function renderBenchResults(summary) {
             <td><span class="cat-tag">${escapeHtml(r.category)}</span></td>
             <td style="color:var(--graph);font-weight:600;">${r.graphrag_score}</td>
             <td style="color:var(--vector);font-weight:600;">${r.vector_rag_score}</td>
+            <td>${r.hybrid_rag_score == null ? '-' : r.hybrid_rag_score}</td>
             <td class="dim-text">${escapeHtml(r.judge_rationale)}</td>
           </tr>
         `).join('')}
@@ -675,7 +682,7 @@ function renderBenchResults(summary) {
 async function runBenchmark() {
   const btn = document.getElementById('run-bench-btn');
   btn.disabled = true;
-  btn.innerHTML = '<span class="spinner"></span> Running benchmark (this calls the local model ~24+ times, may take a while)…';
+  btn.innerHTML = '<span class="spinner"></span> Running benchmark (calls the configured answer and judge models, may take a while)…';
   const resultsEl = document.getElementById('bench-results');
   resultsEl.innerHTML = '';
   try {

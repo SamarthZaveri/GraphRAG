@@ -1,119 +1,108 @@
-﻿# RL: Offline Experiments and Contextual Bandit Training
+# RL: Balanced Three-Engine Evaluation and Routing
 
-This folder evaluates the backend's GraphRAG and vector-RAG engines and trains a per-question engine selector. It reuses the actual backend ingestion, retrieval, and judge functions.
-
-The query-level policy is connected to the app: training saves `backend/data/graph_state/query_bandit.json`, and `/api/query` loads it when `engine="auto"`. The older corpus-level policy from `train_bandit.py` is a separate experiment and is not loaded by that endpoint.
-
-## Files
-
-| File | Purpose |
-| --- | --- |
-| `fetch_corpora.py` | Fetch financial-report corpora from SEC EDGAR |
-| `generate_benchmark.py` | Generate document-grounded questions, categories, and reference answers |
-| `run_experiments.py` | Ingest each corpus, run both engines, judge answers, and record rewards |
-| `train_query_bandit.py` | Train the eight-feature per-question policy used by the app |
-| `train_bandit.py` | Train the older four-feature corpus-level policy |
-| `run_ablation.py` | Compare GraphRAG without its local vector fallback against vector RAG |
-| `features.py` | Re-export feature functions from `backend/app/router_features.py` |
-| `bandit.py` | Re-export LinUCB from `backend/app/query_bandit.py` |
-| `tests/` | Synthetic bandit and mocked-LLM pipeline tests |
+This folder evaluates pure GraphRAG, pure vector RAG, and BM25 + vector hybrid retrieval through the backend. Hosted APIs are the default. See the [project README](../README.md) for credentials, installation, model roles and deployment.
 
 ## Workflow
 
-From the project root:
+From the project root after configuring models and `HF_TOKEN`:
 
 ```powershell
-python -m pip install -r backend/requirements.txt
-python -m pip install -r RL/requirements.txt
-ollama pull qwen2.5:7b-instruct
+python RL/fetch_corpora.py --only semiconductors_2025
+python RL/run_experiments.py --corpus semiconductors_2025 --output-dir RL/data/run-32b
+python RL/train_query_bandit.py --results RL/data/run-32b/query_results.jsonl --seeds 20
 ```
 
-Start Ollama if it is not running. The extraction, answer, and judge models can be overridden through the backend configuration environment variables described in the [project README](../README.md).
+Check `SEC_USER_AGENT` before fetching. Omit the corpus argument to fetch/evaluate all available corpora. If generation cannot support an even category split, the run fails rather than inventing evidence. Use `--allow-unbalanced` only when deliberately accepting a shortfall.
 
-Check `SEC_USER_AGENT` in `fetch_corpora.py` and use an appropriate identifying name and contact email before fetching.
+| File | Purpose |
+| --- | --- |
+| `generate_benchmark.py` | Generate category-balanced questions, references, reasoning and verified quotes |
+| `run_experiments.py` | Reuse a saved benchmark, ingest isolated indexes, answer with all three engines, judge and save rewards |
+| `train_query_bandit.py` | Train the live three-arm query router |
+| `train_bandit.py` | Historical two-arm corpus-router experiment; not the live policy |
+| `run_ablation.py` | Historical separate two-engine diagnostic; shares app state and is no longer needed to disable fallback |
+| `features.py`, `bandit.py` | Re-export shared backend features and LinUCB |
+| `tests/` | Offline synthetic and mocked-model regression tests |
+
+## Questions and reference answers
+
+The default is 12 questions: three each of `local`, `global`, `multi_hop`, and `conflict`. Generation proceeds per category, deduplicates questions, verifies exact evidence quotations against original filings, and audits references and category validity with the configured judge. Unsupported categories cause explicit shortfalls. Consistency questions may have a supported no-conflict answer; differences in reporting periods or metric bases are not forced into contradictions.
 
 ```powershell
-cd RL
-python fetch_corpora.py
-python run_experiments.py
-python train_query_bandit.py
+python RL/run_experiments.py --corpus semiconductors_2025 --questions-only --per-category 3
 ```
 
-To process one corpus:
+Questions are cached in `RL/data/balanced_benchmarks/<corpus>.json`, with document fingerprints and generator metadata. Subsequent runs reuse them even when the answer model changes. `--regenerate-questions` explicitly replaces them. A changed source corpus, target count or generator version is rejected as stale. References come from sampled source excerpts, not necessarily every line of long filings; exact-quote checks and an LLM audit reduce errors but do not eliminate them.
+
+The standalone generator writes a question-list file compatible with the app benchmark:
 
 ```powershell
-python fetch_corpora.py --only semiconductors_2025
-python run_experiments.py --corpus semiconductors_2025
+python RL/generate_benchmark.py --corpus RL/data/corpora/semiconductors_2025 --output backend/data/benchmark_questions.json --per-category 3
 ```
 
-Fetching requires network access. Experiments require the backend dependencies, local model assets, and a running Ollama server.
+Ingest the matching corpus before running that benchmark.
 
-## Data flow
+## Compare answer-model sizes fairly
 
-```text
-fetch_corpora.py
-  -> data/corpora/<name>/*.txt
-
-run_experiments.py
-  -> backend ingestion + benchmark generation + both engines + LLM judge
-  -> data/experiment_results.jsonl  (one aggregate row per corpus)
-  -> data/query_results.jsonl       (one row per corpus/question pair)
-
-train_query_bandit.py
-  -> backend/data/graph_state/query_bandit.json
-  -> backend's automatic engine selection
-```
-
-**Experiments share the backend's active storage.** Ingestion resets its persistent vector collection and writes graph state, community summaries, and R-GCN artifacts into the backend's configured data directory. Ablations do the same. Re-ingest the desired app documents after running experiments; corpus folders and JSONL results are separate, but retrieval state is not isolated.
-
-Results append to both experiment JSONL files. Re-running a corpus adds more rows, which can give that corpus extra weight during subsequent training.
-
-## What the policy learns
-
-The two actions are `graphrag` and `vector_rag`. Each action's reward is its LLM-judge answer score divided by five.
-
-The query-level context has eight features:
-
-- Cross-document entity fraction.
-- Maximum entity document recurrence divided by ten, capped at one.
-- Document count divided by ten, capped at one.
-- Four one-hot category indicators: `local`, `global`, `multi_hop`, and `conflict`.
-- A bias term.
-
-Training categories come from the benchmark generator's labels. Live categories come from `query_engine.classify_query()`, which prompts the extraction LLM. A shared taxonomy helps consistency but does not guarantee matching classifications.
-
-Community modularity and R-GCN validation AUC are computed during ingestion but excluded from the learned feature vector. R-GCN still supports graph retrieval, and those metrics remain part of the backend's rule-based routing fallback.
-
-## Training and serving
-
-LinUCB estimates a linear reward model for each engine and tracks uncertainty. During training, rows arrive in shuffled order. The policy selects an engine using predicted reward plus an exploration bonus, observes only the selected engine's recorded reward, and updates that engine's model. Both known rewards are used to report regret.
+Keep questions, extraction and judge fixed while changing the answer model. These commands use 72B to generate/audit references and judge answers, 14B for extraction, and compare 14B/32B/72B answers on the same saved questions and graph. Using `--state-dir` here deliberately shares experiment indexes between the three single-corpus runs; it does not touch the app's default state.
 
 ```powershell
-python train_query_bandit.py --seeds 20 --alpha 1.0
+. .\scripts\use-model.ps1 -Profile 32b -Backend api
+$env:LEDGER_EXTRACTION_MODEL = "Qwen/Qwen2.5-14B-Instruct"
+$env:LEDGER_QUESTION_MODEL = "Qwen/Qwen2.5-72B-Instruct"
+$env:LEDGER_JUDGE_MODEL = "Qwen/Qwen2.5-72B-Instruct"
+$env:LEDGER_ANSWER_MODEL = "Qwen/Qwen2.5-14B-Instruct"
+python RL/run_experiments.py --corpus semiconductors_2025 --output-dir RL/data/run-14b --state-dir RL/data/shared-runtime
+$env:LEDGER_ANSWER_MODEL = "Qwen/Qwen2.5-32B-Instruct"
+python RL/run_experiments.py --corpus semiconductors_2025 --output-dir RL/data/run-32b --state-dir RL/data/shared-runtime --reuse-index
+$env:LEDGER_ANSWER_MODEL = "Qwen/Qwen2.5-72B-Instruct"
+python RL/run_experiments.py --corpus semiconductors_2025 --output-dir RL/data/run-72b --state-dir RL/data/shared-runtime --reuse-index
 ```
 
-Metrics are averaged across the requested shuffles. The saved policy comes from the final shuffle; the script does not average the models. The backend loads the file on requests, chooses the highest predicted reward without exploration, and does not update the policy from live queries. If routing fails or the policy is missing, it uses corpus-level rules.
-
-The older `train_bandit.py` uses corpus-average rewards and a four-feature corpus context, then saves `data/trained_bandit.json`. That file is not the live query router's policy.
-
-## Ablation
+To compare judge sizes, keep answers fixed and rescore saved answers using `rescore_results.py`; do not regenerate questions or answers:
 
 ```powershell
-python run_ablation.py --corpus semiconductors_2025
+$env:LEDGER_JUDGE_MODEL = "Qwen/Qwen2.5-14B-Instruct"
+python RL/rescore_results.py --input RL/data/run-32b/corpora/semiconductors_2025.json --output RL/data/judge-14b.json
+$env:LEDGER_JUDGE_MODEL = "Qwen/Qwen2.5-32B-Instruct"
+python RL/rescore_results.py --input RL/data/run-32b/corpora/semiconductors_2025.json --output RL/data/judge-32b.json
+$env:LEDGER_JUDGE_MODEL = "Qwen/Qwen2.5-72B-Instruct"
+python RL/rescore_results.py --input RL/data/run-32b/corpora/semiconductors_2025.json --output RL/data/judge-72b.json
 ```
 
-The ablation passes `use_hybrid=False` to GraphRAG. This disables vector-chunk fallback in local retrieval; global retrieval continues to use community summaries. Both engines answer the same generated question set within the ablation run. The questions need not match a previous experiment run.
+Question-model sizes can be compared using separate `--benchmark-dir` directories and `--questions-only`; keep that experiment separate from retrieval comparisons, which need one frozen question set.
 
-Results are stored in `data/ablation_results.jsonl` and do not feed the router-training files.
+## Results and isolation
 
-## Validation and limits
+`--output-dir` defaults to `RL/data/three_engine`. It contains:
+
+- `corpora/<name>.json`: questions, references, quotes, reasoning, engine answers/citations, judge scores/rationales and failures.
+- `query_results.jsonl`: one reward row per successfully evaluated question, with all three rewards, eight-dimensional context and model/retrieval metadata.
+- `experiment_results.jsonl`: corpus-level aggregates.
+- `runtime/`: isolated graph, vector and community state unless `--state-dir` overrides it.
+
+Each corpus output replaces its earlier result within that directory. JSONL files are rebuilt from the saved corpus results, avoiding duplicate append-on-rerun rows. Use separate output directories for model configurations. `--reuse-index` requires one corpus and matching corpus/extraction/retrieval metadata. Experiments import the real backend pipeline; R-GCN is optional and graph-derived retrieval remains the same as serving.
+
+An invalid or failed judge call never becomes a zero reward. It is retried, then logged as an excluded failure. The command exits with failure if any corpus or question was incomplete; valid results already collected remain available. Report category coverage and failures alongside averages, since exclusions can bias the evaluated subset.
+
+## Train and serve
 
 ```powershell
-python -m pytest tests/ -v
+$env:LEDGER_ANSWER_MODEL = "Qwen/Qwen2.5-32B-Instruct"
+$env:LEDGER_JUDGE_MODEL = "Qwen/Qwen2.5-72B-Instruct"
+python RL/train_query_bandit.py --results RL/data/run-32b/query_results.jsonl --seeds 20
 ```
 
-Synthetic tests check bandit behavior against known environments. Pipeline tests mock LLM calls; they do not establish answer quality on real filings.
+The default output is `backend/data/graph_state/query_bandit.json` (or the equivalent under `LEDGER_DATA_DIR`). Live serving validates arm names and model/retrieval metadata before using it. Historical two-engine rewards, missing hybrid rewards, invalid rewards and mixed model configurations are rejected.
 
-The training metrics describe simulated online learning over recorded data, without a separate held-out corpus or question evaluation. Sparse categories, repeated experiment rows, classifier differences, generated reference errors, and judge errors can affect the learned policy. Unparseable judge output currently defaults to zero scores rather than being excluded or retried.
+LinUCB training explores using uncertainty bonuses and updates only the chosen engine's reward. Regret uses the known rewards of all three engines. Serving exploits the highest predicted reward without live updates. The saved policy comes from the final random shuffle, not an average of models. Selection accuracy treats tied best rewards as correct.
 
-Treat the recorded results as experimental evidence within the tested data, rather than production accuracy guarantees.
+The learned context is three corpus features (shared-entity fraction, recurrence/10, document count/10), four category indicators and a bias. Modularity and R-GCN AUC are excluded from that context. Live category classification comes from the extraction LLM, whereas training categories come from the generator, so classification mismatch remains a possible error source.
+
+## Validation
+
+```powershell
+python -m pytest RL/tests -q
+```
+
+Tests are offline and use mocked model responses where relevant. Recorded training metrics simulate online learning; they are not a held-out generalization study. Manually review benchmark references, and evaluate the trained router on new corpora before treating it as a production policy.

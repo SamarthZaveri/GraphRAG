@@ -17,7 +17,7 @@ from chromadb.config import Settings
 
 from . import config
 from .extraction import chunk_text
-from .ollama_client import chat
+from .answering import generate_answer
 from .models import Citation, QueryResponse
 
 _client = None
@@ -61,12 +61,6 @@ def ingest_document(doc_id: str, text: str):
     )
 
 
-ANSWER_SYSTEM_PROMPT = """You are a plain vector-RAG assistant. Answer the question using ONLY \
-the retrieved passages below. If they don't contain the answer, say so. Cite the doc_id for \
-each claim. If a passage already states a percentage, growth rate, or comparison, quote that \
-stated figure directly rather than recomputing it yourself."""
-
-
 def answer_question(question: str, top_k: int = config.VECTOR_TOP_K) -> QueryResponse:
     collection = get_collection()
     if collection.count() == 0:
@@ -81,11 +75,7 @@ def answer_question(question: str, top_k: int = config.VECTOR_TOP_K) -> QueryRes
     context = "\n\n".join(
         f"[{ids[i]} | doc_id={metas[i]['doc_id']}]\n{docs[i]}" for i in range(len(docs))
     )
-    answer = chat(
-        config.ANSWER_MODEL, ANSWER_SYSTEM_PROMPT,
-        f"Retrieved passages:\n{context}\n\nQuestion: {question}",
-        max_tokens=800, temperature=0.2,
-    )
+    answer = generate_answer(question, context)
     citations = [Citation(doc_id=metas[i]["doc_id"], chunk_id=ids[i], snippet=docs[i][:300])
                  for i in range(len(docs))]
     return QueryResponse(question=question, mode_used="local", answer=answer, citations=citations)

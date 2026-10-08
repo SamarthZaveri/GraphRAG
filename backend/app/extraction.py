@@ -138,7 +138,7 @@ def extract_document(doc_id: str, text: str) -> "tuple[list[dict], list[Extracti
 
     Returns (chunk_records, extraction_results) -- chunk_records includes
     both the table blocks (as citable chunks) and the narrative chunks, so
-    the caller can register all of them for citations/hybrid-grounding in
+    the caller can register all of them for citations/source-grounding in
     one place.
     """
     from . import table_parser

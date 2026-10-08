@@ -33,34 +33,23 @@ def test_feature_extraction_shape_and_bounds():
 
     # missing modularity/auc should fall back to sane defaults, not crash
     features2 = extract_features(store, modularity=None, rgcn_val_auc=None)
-    assert features2[1] == 0.0  # modularity default
-    assert features2[2] == 0.5  # AUC default = chance level
+    assert np.allclose(features2, features)  # retired metrics do not affect features
+    assert features2[1] == 0.2  # max document recurrence / 10
+    assert features2[2] == 0.2  # two documents / 10
 
 
 def test_generate_benchmark_filters_malformed_output():
-    from generate_benchmark import generate_benchmark_for_corpus
-
-    fake_response = {
-        "questions": [
-            {"question": "Q1?", "category": "local", "reference_answer": "A1"},
-            {"question": "Q2?", "category": "not_a_real_category", "reference_answer": "A2"},
-            {"question": "", "category": "local", "reference_answer": "should be dropped, no question text"},
-            {"category": "global", "reference_answer": "missing question key entirely"},
-            "not even a dict",
-        ]
-    }
-    with patch("generate_benchmark.chat_json", return_value=fake_response):
-        questions = generate_benchmark_for_corpus(["doc text"], ["doc1"])
-
-    assert len(questions) == 2, "should keep only well-formed questions"
-    assert questions[0]["category"] == "local"
-    assert questions[1]["category"] == "local", "invalid category should be coerced to a safe default"
+    from generate_benchmark import clean_question
+    sources = {"doc1": "Revenue was 100 million in Q2 2025."}
+    assert clean_question("not a dict", "local", sources, set()) is None
+    assert clean_question({"question": "Q?", "category": "not_a_real_category", "reference_answer": "A"}, "local", sources, set()) is None
+    assert clean_question({"question": "", "category": "local"}, "local", sources, set()) is None
 
 
 def test_full_training_loop_on_realistic_synthetic_data(tmp_path):
     """Builds experiment-result rows shaped like what run_experiments.py
     would actually produce -- favorable corpora (high cross-doc overlap,
-    high modularity, high R-GCN AUC) should reward GraphRAG more; control
+    high entity recurrence and document count) should reward GraphRAG more; control
     corpora (single doc / no shared entities) should reward vector RAG
     more -- and checks the FULL train_bandit.py pipeline (not just bandit.py
     in isolation) learns to tell them apart."""
@@ -71,20 +60,20 @@ def test_full_training_loop_on_realistic_synthetic_data(tmp_path):
 
     rng = np.random.default_rng(42)
     rows = []
-    for i in range(8):
-        # favorable: high overlap/modularity/auc -> graphrag genuinely better
+    for i in range(40):
+        # favorable: high overlap/recurrence -> graphrag genuinely better
         rows.append({
             "corpus": f"favorable_{i}", "num_docs": 4,
-            "features": [rng.uniform(0.4, 0.8), rng.uniform(0.5, 0.9), rng.uniform(0.7, 0.95), 0.4, 1.0],
+            "features": [rng.uniform(0.4, 0.8), rng.uniform(0.3, 0.4), 0.4, 1.0],
             "reward_graphrag": rng.uniform(0.7, 0.85),
             "reward_vector_rag": rng.uniform(0.5, 0.65),
             "num_questions": 6,
         })
-    for i in range(8):
-        # control: low overlap/modularity/auc -> vector_rag genuinely better
+    for i in range(40):
+        # control: low overlap/recurrence -> vector_rag genuinely better
         rows.append({
             "corpus": f"control_{i}", "num_docs": 1,
-            "features": [rng.uniform(0.0, 0.1), rng.uniform(0.0, 0.1), rng.uniform(0.45, 0.55), 0.1, 1.0],
+            "features": [rng.uniform(0.0, 0.1), 0.1, 0.1, 1.0],
             "reward_graphrag": rng.uniform(0.3, 0.5),
             "reward_vector_rag": rng.uniform(0.65, 0.85),
             "num_questions": 6,
@@ -106,8 +95,8 @@ def test_full_training_loop_on_realistic_synthetic_data(tmp_path):
     )
 
     # explicit recommendation check on the FINAL trained policy
-    favorable_x = np.array([0.6, 0.7, 0.85, 0.4, 1.0])
-    control_x = np.array([0.05, 0.05, 0.5, 0.1, 1.0])
+    favorable_x = np.array([0.6, 0.4, 0.4, 1.0])
+    control_x = np.array([0.05, 0.1, 0.1, 1.0])
     fav_arm, _ = bandit.select_arm(favorable_x)
     ctrl_arm, _ = bandit.select_arm(control_x)
     assert fav_arm == "graphrag"

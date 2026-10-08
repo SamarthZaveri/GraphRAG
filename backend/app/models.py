@@ -45,7 +45,7 @@ class IngestResponse(BaseModel):
 class QueryRequest(BaseModel):
     question: str
     mode: Literal["auto", "local", "global"] = "auto"
-    engine: Literal["auto", "graphrag", "vector_rag"] = "auto"
+    engine: Literal["auto", "graphrag", "vector_rag", "hybrid_rag"] = "auto"
 
 
 class Citation(BaseModel):
@@ -68,6 +68,7 @@ class CompareResponse(BaseModel):
     question: str
     graphrag: QueryResponse
     vector_rag: QueryResponse
+    hybrid_rag: Optional[QueryResponse] = None
 
 
 class BenchmarkQuestion(BaseModel):
@@ -75,6 +76,8 @@ class BenchmarkQuestion(BaseModel):
     question: str
     category: Literal["local", "global", "multi_hop", "conflict"]
     reference_answer: str
+    evidence: List[dict] = []
+    reasoning: Optional[str] = None
 
 
 class BenchmarkResult(BaseModel):
@@ -83,9 +86,12 @@ class BenchmarkResult(BaseModel):
     category: str
     graphrag_answer: str
     vector_rag_answer: str
+    hybrid_rag_answer: Optional[str] = None
+    hybrid_rag_score: Optional[float] = None
     graphrag_score: float
     vector_rag_score: float
     judge_rationale: str
+    metadata: dict = {}
 
 
 class BenchmarkSummary(BaseModel):

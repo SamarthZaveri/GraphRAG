@@ -38,6 +38,7 @@ class LinUCBBandit:
         self.context_dim = context_dim
         self.arms = list(arms)
         self.alpha = alpha
+        self.metadata = {}
         self.A: Dict[str, np.ndarray] = {a: np.identity(context_dim) for a in self.arms}
         self.b: Dict[str, np.ndarray] = {a: np.zeros(context_dim) for a in self.arms}
 
@@ -73,6 +74,7 @@ class LinUCBBandit:
     def save(self, path: str | Path):
         data = {
             "context_dim": self.context_dim, "arms": self.arms, "alpha": self.alpha,
+            "metadata": self.metadata,
             "A": {a: self.A[a].tolist() for a in self.arms},
             "b": {a: self.b[a].tolist() for a in self.arms},
         }
@@ -82,6 +84,7 @@ class LinUCBBandit:
     def load(cls, path: str | Path) -> "LinUCBBandit":
         data = json.loads(Path(path).read_text())
         bandit = cls(data["context_dim"], data["arms"], data["alpha"])
+        bandit.metadata = data.get("metadata", {})
         for a in bandit.arms:
             bandit.A[a] = np.array(data["A"][a])
             bandit.b[a] = np.array(data["b"][a])

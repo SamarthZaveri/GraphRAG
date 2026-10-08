@@ -146,7 +146,7 @@ def detect_and_extract_tables(
 
 def table_chunk_texts(document_text: str, doc_id: str) -> List[dict]:
     """Returns synthetic 'chunk' records (chunk_id, doc_id, text) for each
-    detected table, so citations/hybrid-grounding can still point back to
+    detected table, so citations/source-grounding can still point back to
     the original table text even though it bypassed LLM extraction."""
     lines = document_text.split("\n")
     chunks = []

@@ -14,7 +14,7 @@ from .models import (
     IngestResponse, QueryRequest, QueryResponse, CompareResponse,
     BenchmarkSummary,
 )
-from . import query_engine, vector_baseline, benchmark, ollama_client, rgcn, corpus_router
+from . import query_engine, vector_baseline, benchmark, ollama_client, rgcn, corpus_router, engines
 
 app = FastAPI(title="Ledger — GraphRAG for Financial Reports")
 
@@ -32,7 +32,7 @@ def _read_text_file(path: Path) -> str:
         from pypdf import PdfReader
         reader = PdfReader(str(path))
         return "\n\n".join(page.extract_text() or "" for page in reader.pages)
-    return path.read_text(errors="ignore")
+    return path.read_text(encoding="utf-8", errors="ignore")
 
 
 def _ingest_documents(doc_paths: List[Path], mode: str = "replace") -> IngestResponse:
@@ -111,10 +111,14 @@ def status():
         "ollama_available": ollama_up,
         "ollama_models": ollama_client.list_models() if ollama_up else [],
         "ollama_host": config.OLLAMA_HOST,
+        "llm_backend": config.LLM_BACKEND,
+        "llm_available": ollama_up,
+        "llm_endpoint": config.API_BASE_URL if config.LLM_BACKEND == "api" else config.OLLAMA_HOST,
         "configured_models": {
             "extraction": config.EXTRACTION_MODEL,
             "answer": config.ANSWER_MODEL,
             "judge": config.JUDGE_MODEL,
+            "question": config.QUESTION_MODEL,
         },
         "rgcn_available": rgcn.TORCH_AVAILABLE,
         "rgcn_trained": rgcn_state is not None,
@@ -128,8 +132,7 @@ def status():
 @app.post("/api/ingest/sample", response_model=IngestResponse)
 def ingest_sample():
     if not ollama_client.is_available():
-        raise HTTPException(400, f"Can't reach Ollama at {config.OLLAMA_HOST}. Run `ollama serve` "
-                                  f"and `ollama pull {config.EXTRACTION_MODEL}` first.")
+        raise HTTPException(400, "LLM endpoint unavailable. Check HF_TOKEN/API configuration or start your configured Ollama server.")
     paths = sorted(config.SAMPLE_DOCS_DIR.glob("*.txt"))
     if not paths:
         raise HTTPException(404, "No sample documents found.")
@@ -145,8 +148,7 @@ async def ingest_upload(files: List[UploadFile] = File(...), mode: str = Form("a
     if mode not in ("add", "replace"):
         raise HTTPException(400, "mode must be 'add' or 'replace'")
     if not ollama_client.is_available():
-        raise HTTPException(400, f"Can't reach Ollama at {config.OLLAMA_HOST}. Run `ollama serve` "
-                                  f"and `ollama pull {config.EXTRACTION_MODEL}` first.")
+        raise HTTPException(400, "LLM endpoint unavailable. Check HF_TOKEN/API configuration or start your configured Ollama server.")
     config.UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
     saved_paths = []
     for f in files:
@@ -197,7 +199,7 @@ def query(req: QueryRequest):
     """Single-answer query for the Ask tab. engine="auto" now routes PER
     QUESTION via corpus_router.route_query(), which combines this corpus's
     doc-level structure with a live classification of the question itself
-    (local/global/multi_hop/conflict) and scores both engines using a
+    (local/global/multi_hop/conflict) and scores all three engines using a
     trained contextual bandit. This replaced a static, corpus-wide
     recommendation after real evaluation data showed corpus structure
     alone doesn't predict which engine wins on any individual question --
@@ -205,17 +207,14 @@ def query(req: QueryRequest):
     the previous rule-based corpus-level recommendation if no trained
     query bandit is available yet. "graphrag"/"vector_rag" still force a
     manual choice, unchanged. This routing does NOT apply to
-    /api/query/compare, which always runs both engines by design."""
+    /api/query/compare, which always runs all three engines by design."""
     try:
         engine = req.engine
         reason = None
         if engine == "auto":
             engine, reason = corpus_router.route_query(req.question)
 
-        if engine == "vector_rag":
-            resp = vector_baseline.answer_question(req.question)
-        else:
-            resp = query_engine.answer_question(req.question, mode=req.mode)
+        resp = engines.answer_question(engine, req.question, mode=req.mode)
 
         resp.engine_used = engine
         resp.engine_reason = reason
@@ -230,7 +229,8 @@ def query_compare(req: QueryRequest):
     try:
         graphrag_resp = query_engine.answer_question(req.question, mode=req.mode)
         vector_resp = vector_baseline.answer_question(req.question)
-        return CompareResponse(question=req.question, graphrag=graphrag_resp, vector_rag=vector_resp)
+        hybrid_resp = engines.answer_question("hybrid_rag", req.question)
+        return CompareResponse(question=req.question, graphrag=graphrag_resp, vector_rag=vector_resp, hybrid_rag=hybrid_resp)
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(500, str(e))
@@ -256,3 +256,9 @@ def get_benchmark_results():
     if summary is None:
         return {"results": [], "graphrag_avg": None, "vector_rag_avg": None}
     return summary.model_dump()
+
+# Serve the existing static interface from the same origin in deployments.
+from fastapi.staticfiles import StaticFiles
+_frontend = config.BACKEND_ROOT.parent / "frontend"
+if _frontend.exists():
+    app.mount("/", StaticFiles(directory=str(_frontend), html=True), name="frontend")

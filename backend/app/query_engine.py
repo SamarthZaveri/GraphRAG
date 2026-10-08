@@ -14,12 +14,8 @@ For a given question it decides whether to do:
     question (ranked by local text-embedding similarity, not dumped in
     wholesale) and synthesize across them.
 
-Hybrid grounding: local search also pulls the same top-k raw chunks the
-vector-RAG baseline would retrieve for this question and merges them into
-the context. This means GraphRAG's context is always at least as grounded
-in original text as the vector baseline's, on top of the graph structure —
-if GraphRAG were losing to vector RAG mainly because compressed graph
-triples threw away detail the raw prose had, this closes that gap directly.
+Local answers are grounded in graph-derived facts and original source chunks.
+No vector-database chunks are retrieved by this engine.
 """
 from __future__ import annotations
 import re
@@ -28,7 +24,8 @@ from typing import List, Tuple
 
 from . import config
 from .community import load_summaries
-from .ollama_client import chat, chat_json
+from .ollama_client import chat_json
+from .answering import generate_answer
 from .graph_store import GraphStore
 from .models import Citation, QueryResponse
 from . import rgcn
@@ -36,8 +33,7 @@ from . import rgcn
 LOCAL_HOPS = 2
 RGCN_EXPANSION_K = 4
 GLOBAL_TOP_N_COMMUNITIES = 4
-HYBRID_CHUNK_TOP_K = 4
-HYBRID_VECTOR_FALLBACK_K = 4
+GRAPH_CHUNK_TOP_K = 4
 
 # Real 12-corpus, 70-question evaluation found GraphRAG's worst losses
 # clustered on larger multi-doc graphs, with judge rationales repeatedly
@@ -173,7 +169,7 @@ def _graph_hop_expand(store: GraphStore, seeds: List[str], hops: int) -> set:
     return visited
 
 
-def _local_context(question: str, store: GraphStore, seed_entities: List[str], use_hybrid: bool = True):
+def _local_context(question: str, store: GraphStore, seed_entities: List[str]):
     seeds = _fuzzy_match_nodes(seed_entities, store)
     if not seeds:
         q_lower = question.lower()
@@ -210,87 +206,24 @@ def _local_context(question: str, store: GraphStore, seed_entities: List[str], u
             tag = " [via R-GCN]" if n in rgcn_neighbors else ""
             node_lines.append(f"- {n} ({d.get('type')}){tag}: {d.get('description', '')}")
 
-    # Hybrid grounding. ORDER MATTERS here when enabled: vector-similarity
-    # chunks go FIRST, graph-traversal chunks go SECOND. Real evaluation
-    # data showed GraphRAG's worst failures were "wrong time period"
-    # answers on larger graphs -- if a fuzzy-matched seed grabbed the wrong
-    # period (see _year_aware_score above), the graph-derived chunk for
-    # that wrong period would previously appear FIRST in context, and an
-    # LLM instructed to "copy figures exactly as given" can end up copying
-    # the wrong period's figure with full confidence. Vector similarity
-    # doesn't depend on entity-name string matching, so it's less prone to
-    # this specific failure mode -- giving it primacy in context doesn't
-    # fix a bad seed match, but it stops a bad seed match from actively
-    # out-competing the correct content for the model's attention.
-    #
-    # use_hybrid=False disables this block entirely, for the graph-only
-    # ablation (see RL/run_ablation.py): GraphRAG's own hybrid safety net
-    # already pulls in the same vector-similarity chunks vector RAG uses,
-    # so a "GraphRAG vs vector RAG" comparison with hybrid always-on isn't
-    # really testing graph retrieval against vector retrieval -- it's
-    # testing (graph + vector) against (vector alone). Disabling it here
-    # isolates what graph structure alone actually contributes.
+    # Preserve graph-edge discovery order when selecting supporting chunks.
     raw_chunks = []
-    if not use_hybrid:
-        for cid in list(chunk_ids_seen)[:HYBRID_CHUNK_TOP_K]:
-            chunk = store.chunks.get(cid, {})
-            if chunk.get("text"):
-                raw_chunks.append(f"[{chunk.get('doc_id')} | {cid}]\n{chunk['text']}")
-        return seeds, list(visited), node_lines, facts, citations[:14], raw_chunks
-
-    # Snapshot BEFORE the vector-fallback loop mutates chunk_ids_seen, so
-    # the two sources stay cleanly separable.
-    graph_derived_chunk_ids = set(chunk_ids_seen)
-
-    try:
-        from . import vector_baseline
-        collection = vector_baseline.get_collection()
-        if collection.count() > 0:
-            results = collection.query(query_texts=[question], n_results=min(HYBRID_VECTOR_FALLBACK_K, collection.count()))
-            for cid, doc_text, meta in zip(results["ids"][0], results["documents"][0], results["metadatas"][0]):
-                if cid in graph_derived_chunk_ids:
-                    continue  # will be added in its graph-derived form below; skip the duplicate
-                raw_chunks.append(f"[{meta.get('doc_id')} | {cid}]\n{doc_text}")
-                chunk_ids_seen.add(cid)
-                citations.append(Citation(doc_id=meta.get("doc_id", ""), chunk_id=cid, snippet=doc_text[:300]))
-    except Exception:
-        pass  # vector baseline not available/ingested yet — graph-only context still works
-
-    # ...then graph-traversal-found chunks (capped), appended AFTER so they
-    # don't crowd out the vector-similarity chunks' primacy in context.
-    for cid in list(graph_derived_chunk_ids)[:HYBRID_CHUNK_TOP_K]:
-        chunk = store.chunks.get(cid, {})
+    for citation in citations[:GRAPH_CHUNK_TOP_K]:
+        chunk = store.chunks.get(citation.chunk_id, {})
         if chunk.get("text"):
-            raw_chunks.append(f"[{chunk.get('doc_id')} | {cid}]\n{chunk['text']}")
+            raw_chunks.append(f"[{chunk.get('doc_id')} | {citation.chunk_id}]\n{chunk['text']}")
 
     return seeds, list(visited), node_lines, facts, citations[:14], raw_chunks
 
 
-ANSWER_SYSTEM_PROMPT = """You are Ledger, a GraphRAG assistant answering questions about a set \
-of financial reports using facts retrieved from a knowledge graph, plus the original source text \
-those facts were extracted from. Answer only from the provided context — if it doesn't contain \
-the answer, say so plainly rather than guessing. Cite which document(s) support each claim \
-inline using the doc_id shown in the context (e.g. "(doc1_maxlinear_q2_2025_earnings)"). Be \
-precise about numbers, dates, and company names — copy figures exactly as given.
-
-CRITICAL: if the source text already states a percentage, growth rate, or comparison (e.g. "up \
-13% sequentially", "margin decreased to 21.5% from 23.6%"), quote that stated figure directly — \
-do NOT recompute it yourself from raw numbers. You are prone to arithmetic mistakes; the filing's \
-own stated comparison is always more reliable than your mental math. Only compute a new number \
-yourself if the question asks for something not already stated anywhere in the context, and even \
-then show your work briefly so an error is visible rather than presented as fact.
-
-Keep the answer focused and no longer than necessary."""
-
-
-def answer_local(question: str, use_hybrid: bool = True) -> QueryResponse:
+def answer_local(question: str) -> QueryResponse:
     store = GraphStore.load()
     if store is None or store.graph.number_of_nodes() == 0:
         return QueryResponse(question=question, mode_used="local",
                               answer="No documents have been ingested yet.", citations=[])
     _, seed_entities = route_question(question)
     seeds, visited, node_lines, facts, citations, raw_chunks = _local_context(
-        question, store, seed_entities, use_hybrid=use_hybrid
+        question, store, seed_entities
     )
 
     context_parts = ["ENTITIES:\n" + "\n".join(node_lines), "\nFACTS:\n" + "\n".join(facts)]
@@ -298,11 +231,7 @@ def answer_local(question: str, use_hybrid: bool = True) -> QueryResponse:
         context_parts.append("\nSOURCE TEXT:\n" + "\n\n".join(raw_chunks))
     context = "\n".join(context_parts)
 
-    answer = chat(
-        config.ANSWER_MODEL, ANSWER_SYSTEM_PROMPT,
-        f"Context from knowledge graph:\n{context}\n\nQuestion: {question}",
-        max_tokens=800, temperature=0.2,
-    )
+    answer = generate_answer(question, context)
     return QueryResponse(question=question, mode_used="local", answer=answer,
                           citations=citations, graph_path=visited[:24])
 
@@ -326,30 +255,27 @@ def answer_global(question: str) -> QueryResponse:
                               answer="No community summaries available yet — run ingestion first.",
                               citations=[])
     ranked = _rank_communities(question, summaries)
+    store = GraphStore.load()
+    def source_docs(summary):
+        if store is None:
+            return []
+        return sorted({doc for member in summary.members if store.graph.has_node(member)
+                       for doc in store.graph.nodes[member].get("source_docs", [])})
     context = "\n\n".join(
-        f"[Community: {s.title}] (members: {', '.join(s.members[:8])})\n{s.summary}" for s in ranked
+        f"[Community: {s.title}; source documents: {', '.join(source_docs(s))}]\n{s.summary}" for s in ranked
     )
-    answer = chat(
-        config.ANSWER_MODEL, ANSWER_SYSTEM_PROMPT,
-        f"Community summaries:\n{context}\n\nQuestion: {question}",
-        max_tokens=900, temperature=0.2,
-    )
-    citations = [Citation(doc_id=s.title, chunk_id=f"community_{s.community_id}", snippet=s.summary[:300])
-                 for s in ranked]
+    answer = generate_answer(question, context)
+    citations = [Citation(doc_id=doc, chunk_id=f"community_{s.community_id}", snippet=s.summary[:300])
+                 for s in ranked for doc in source_docs(s)]
     return QueryResponse(question=question, mode_used="global", answer=answer, citations=citations)
 
 
-def answer_question(question: str, mode: str = "auto", use_hybrid: bool = True) -> QueryResponse:
-    """
-    use_hybrid only affects LOCAL mode (answer_global uses community
-    summaries, a separate mechanism with no vector fallback to toggle).
-    Defaults to True, matching production behavior unchanged -- pass False
-    for the graph-only ablation (RL/run_ablation.py).
-    """
+def answer_question(question: str, mode: str = "auto") -> QueryResponse:
+    """Answer using graph neighborhoods or community summaries."""
     if mode == "auto":
         routed_mode, _ = route_question(question)
     else:
         routed_mode = mode
     if routed_mode == "local":
-        return answer_local(question, use_hybrid=use_hybrid)
+        return answer_local(question)
     return answer_global(question)
