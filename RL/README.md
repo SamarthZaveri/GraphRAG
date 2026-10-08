@@ -1,102 +1,119 @@
-# RL — Contextual Bandit Router Training
+﻿# RL: Offline Experiments and Contextual Bandit Training
 
-Trains the GraphRAG-vs-vector-RAG router (currently rule-based in
-`backend/app/corpus_router.py`) into a learned contextual bandit, using
-real benchmark outcomes across multiple corpora as reward signal.
+This folder evaluates the backend's GraphRAG and vector-RAG engines and trains a per-question engine selector. It reuses the actual backend ingestion, retrieval, and judge functions.
 
-## The honest scope of this
+The query-level policy is connected to the app: training saves `backend/data/graph_state/query_bandit.json`, and `/api/query` loads it when `engine="auto"`. The older corpus-level policy from `train_bandit.py` is a separate experiment and is not loaded by that endpoint.
 
-- **The algorithm** (`bandit.py`, LinUCB) is verified correct against
-  synthetic environments with known ground truth — see
-  `tests/test_bandit_synthetic.py`. This doesn't depend on real data volume
-  and is fully trustworthy.
-- **Training on real data** (`run_experiments.py` → `train_bandit.py`) is
-  only as good as how many corpora you actually run it on. 12 corpora
-  (the default manifest in `fetch_corpora.py`) is enough to see the policy
-  move in a sensible direction and to demo convincingly, but it is **not**
-  enough to call this a validated production policy — `train_bandit.py`
-  prints an explicit warning to this effect below 10 recorded corpora.
-- **`fetch_corpora.py` was written but not tested against the live network**
-  in the environment that wrote it (no path to sec.gov from there). It's
-  built against SEC's documented, stable public APIs and should work, but
-  expect to debug a ticker or two (a company's most recent 8-K not
-  containing an earnings exhibit, an exhibit using a slightly different
-  filename convention, etc.) — that's a normal part of scraping a real API,
-  not a sign something is fundamentally wrong.
+## Files
 
-## Pipeline
+| File | Purpose |
+| --- | --- |
+| `fetch_corpora.py` | Fetch financial-report corpora from SEC EDGAR |
+| `generate_benchmark.py` | Generate document-grounded questions, categories, and reference answers |
+| `run_experiments.py` | Ingest each corpus, run both engines, judge answers, and record rewards |
+| `train_query_bandit.py` | Train the eight-feature per-question policy used by the app |
+| `train_bandit.py` | Train the older four-feature corpus-level policy |
+| `run_ablation.py` | Compare GraphRAG without its local vector fallback against vector RAG |
+| `features.py` | Re-export feature functions from `backend/app/router_features.py` |
+| `bandit.py` | Re-export LinUCB from `backend/app/query_bandit.py` |
+| `tests/` | Synthetic bandit and mocked-LLM pipeline tests |
 
-```
-fetch_corpora.py  →  data/corpora/<name>/*.txt   (12 real corpora, mix of
-                                                    GraphRAG-favorable and
-                                                    deliberately unfavorable)
-        │
-        ▼
-run_experiments.py  →  for each corpus: ingest via the REAL backend
-                        pipeline (extraction, graph, communities, R-GCN),
-                        auto-generate a benchmark (generate_benchmark.py),
-                        run both engines, judge, record
-                        data/experiment_results.jsonl
-        │
-        ▼
-train_bandit.py  →  simulates honest online bandit training (shuffled
-                     arrival order, bandit-feedback only, not both arms)
-                     over the recorded results, reports accuracy/regret,
-                     saves data/trained_bandit.json
+## Workflow
+
+From the project root:
+
+```powershell
+python -m pip install -r backend/requirements.txt
+python -m pip install -r RL/requirements.txt
+ollama pull qwen2.5:7b-instruct
 ```
 
-## Running it
+Start Ollama if it is not running. The extraction, answer, and judge models can be overridden through the backend configuration environment variables described in the [project README](../README.md).
 
-```bash
+Check `SEC_USER_AGENT` in `fetch_corpora.py` and use an appropriate identifying name and contact email before fetching.
+
+```powershell
 cd RL
-pip install -r requirements.txt
-
-# 1. Edit SEC_USER_AGENT at the top of fetch_corpora.py to your real name/email
-#    (SEC blocks generic User-Agent strings)
 python fetch_corpora.py
-
-# 2. Make sure Ollama is running (same requirement as the main backend)
-python run_experiments.py          # slow -- real ingestion + real LLM calls x 12 corpora
-
-# 3.
-python train_bandit.py
-
-# Run the test suite (fast, no network, no Ollama needed for the synthetic
-# correctness tests; the pipeline-integration tests mock the LLM but use
-# real feature-extraction and training-loop code)
-pytest tests/ -v
+python run_experiments.py
+python train_query_bandit.py
 ```
 
-## Why LinUCB and not deep RL
+To process one corpus:
 
-There's no labeled data and, more importantly, nowhere near enough corpora
-to train a neural policy safely (12-20 examples, not the thousands-to-
-millions a deep RL method needs). LinUCB (Li et al. 2010) is the correct
-tool at this scale: it maintains an explicit per-arm uncertainty estimate,
-so its exploration shrinks automatically as evidence accumulates, and it's
-a real, standard, citable contextual-bandit algorithm rather than a
-simplified stand-in invented for this project.
+```powershell
+python fetch_corpora.py --only semiconductors_2025
+python run_experiments.py --corpus semiconductors_2025
+```
 
-## What feeds the bandit
+Fetching requires network access. Experiments require the backend dependencies, local model assets, and a running Ollama server.
 
-Context (5-dim, see `features.py`): cross-document entity overlap fraction,
-community modularity, R-GCN validation AUC, normalized document count, and
-a bias term — the same signals `backend/app/corpus_router.py`'s rule-based
-router already uses, so the bandit is learning to weight/combine signals a
-human already picked as relevant, not starting from nothing.
+## Data flow
 
-Reward: the benchmark judge's average score for the chosen engine on that
-corpus (normalized 0-1). Since experiments run both engines on every
-corpus, we know both arms' true reward for evaluation/regret purposes —
-but `train_bandit.py` deliberately simulates genuine bandit feedback
-(the policy only gets to see the reward for the arm it actually picked)
-so the reported accuracy/regret numbers reflect real online-learning
-performance, not an inflated full-information result.
+```text
+fetch_corpora.py
+  -> data/corpora/<name>/*.txt
 
-## Once trained
+run_experiments.py
+  -> backend ingestion + benchmark generation + both engines + LLM judge
+  -> data/experiment_results.jsonl  (one aggregate row per corpus)
+  -> data/query_results.jsonl       (one row per corpus/question pair)
 
-`data/trained_bandit.json` isn't wired into the main backend's
-`/api/query` endpoint yet — that's a deliberate next step, not an
-oversight, since a policy trained on 12 corpora should earn its way into
-being the default via more validation first. The rule-based router in
-`backend/app/corpus_router.py` remains the production default until then.
+train_query_bandit.py
+  -> backend/data/graph_state/query_bandit.json
+  -> backend's automatic engine selection
+```
+
+**Experiments share the backend's active storage.** Ingestion resets its persistent vector collection and writes graph state, community summaries, and R-GCN artifacts into the backend's configured data directory. Ablations do the same. Re-ingest the desired app documents after running experiments; corpus folders and JSONL results are separate, but retrieval state is not isolated.
+
+Results append to both experiment JSONL files. Re-running a corpus adds more rows, which can give that corpus extra weight during subsequent training.
+
+## What the policy learns
+
+The two actions are `graphrag` and `vector_rag`. Each action's reward is its LLM-judge answer score divided by five.
+
+The query-level context has eight features:
+
+- Cross-document entity fraction.
+- Maximum entity document recurrence divided by ten, capped at one.
+- Document count divided by ten, capped at one.
+- Four one-hot category indicators: `local`, `global`, `multi_hop`, and `conflict`.
+- A bias term.
+
+Training categories come from the benchmark generator's labels. Live categories come from `query_engine.classify_query()`, which prompts the extraction LLM. A shared taxonomy helps consistency but does not guarantee matching classifications.
+
+Community modularity and R-GCN validation AUC are computed during ingestion but excluded from the learned feature vector. R-GCN still supports graph retrieval, and those metrics remain part of the backend's rule-based routing fallback.
+
+## Training and serving
+
+LinUCB estimates a linear reward model for each engine and tracks uncertainty. During training, rows arrive in shuffled order. The policy selects an engine using predicted reward plus an exploration bonus, observes only the selected engine's recorded reward, and updates that engine's model. Both known rewards are used to report regret.
+
+```powershell
+python train_query_bandit.py --seeds 20 --alpha 1.0
+```
+
+Metrics are averaged across the requested shuffles. The saved policy comes from the final shuffle; the script does not average the models. The backend loads the file on requests, chooses the highest predicted reward without exploration, and does not update the policy from live queries. If routing fails or the policy is missing, it uses corpus-level rules.
+
+The older `train_bandit.py` uses corpus-average rewards and a four-feature corpus context, then saves `data/trained_bandit.json`. That file is not the live query router's policy.
+
+## Ablation
+
+```powershell
+python run_ablation.py --corpus semiconductors_2025
+```
+
+The ablation passes `use_hybrid=False` to GraphRAG. This disables vector-chunk fallback in local retrieval; global retrieval continues to use community summaries. Both engines answer the same generated question set within the ablation run. The questions need not match a previous experiment run.
+
+Results are stored in `data/ablation_results.jsonl` and do not feed the router-training files.
+
+## Validation and limits
+
+```powershell
+python -m pytest tests/ -v
+```
+
+Synthetic tests check bandit behavior against known environments. Pipeline tests mock LLM calls; they do not establish answer quality on real filings.
+
+The training metrics describe simulated online learning over recorded data, without a separate held-out corpus or question evaluation. Sparse categories, repeated experiment rows, classifier differences, generated reference errors, and judge errors can affect the learned policy. Unparseable judge output currently defaults to zero scores rather than being excluded or retried.
+
+Treat the recorded results as experimental evidence within the tested data, rather than production accuracy guarantees.
