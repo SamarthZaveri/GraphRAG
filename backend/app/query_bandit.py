@@ -1,30 +1,8 @@
-"""
-LinUCB contextual bandit (Li et al. 2010, "A Contextual-Bandit Approach to
-Personalized News Article Recommendation").
+"""LinUCB contextual bandit shared by offline training and app routing.
 
-RELOCATION NOTE: this used to live at RL/bandit.py. It's moved here because
-corpus_router.py needs to LOAD a trained policy at live query-serving time,
-not just during offline RL training -- and backend/app must be able to run
-standalone without depending on the RL/ experimentation folder. RL/bandit.py
-is now a thin re-export shim pointing here, so train_bandit.py and
-train_query_bandit.py both still work unchanged.
-
-Why this algorithm and not deep RL: we have on the order of a dozen-to-a-few-
-dozen corpora (or, for the per-question router, tens to ~100 individual
-questions) to learn from -- nowhere near enough to train a neural policy
-safely. LinUCB maintains an explicit uncertainty estimate per arm (via the
-A matrix, effectively a running covariance) and its exploration bonus
-shrinks as evidence accumulates -- it's the right tool for exactly this data
-scale, and it's a real, standard, citable algorithm, not a toy simplification
-invented for this project.
-
-At TRAINING time, select_arm() (mean + UCB exploration bonus) is used, to
-simulate honest online learning. At SERVING time (corpus_router.route_query),
-predicted_reward() is used instead for each arm and the max is taken --
-pure exploitation of the learned theta, no exploration bonus, since a live
-request isn't an opportunity to explore, it's a decision that needs the
-best current estimate.
-"""
+Training selects arms using the uncertainty bonus and updates the selected
+arm from its observed reward. Serving selects the greatest predicted reward
+without exploration or updates. Policies persist as JSON."""
 from __future__ import annotations
 import json
 from pathlib import Path
@@ -66,10 +44,12 @@ class LinUCBBandit:
         x = np.asarray(x, dtype=float)
         return float(self._theta(arm) @ x)
 
-    def update(self, arm: str, x, reward: float):
+    def update(self, arm: str, x, reward: float, weight: float = 1.0):
         x = np.asarray(x, dtype=float)
-        self.A[arm] += np.outer(x, x)
-        self.b[arm] += reward * x
+        if not np.isfinite(weight) or weight <= 0:
+            raise ValueError("Sample weight must be positive and finite")
+        self.A[arm] += weight * np.outer(x, x)
+        self.b[arm] += weight * reward * x
 
     def save(self, path: str | Path):
         data = {

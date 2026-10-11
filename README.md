@@ -1,140 +1,81 @@
-# Ledger: Three Retrieval Engines for Financial Reports
+# Ledger: adaptive retrieval over financial reports
 
-Ledger answers financial-report questions and compares three retrieval engines on the same evidence-checked benchmark:
+The active workflow uses **local Ollama Qwen2.5 14B for every LLM role**:
 
-| Engine | Retrieval |
-| --- | --- |
-| `graphrag` | Graph facts and graph-selected source chunks for local search; community summaries for global search. No vector-chunk fallback. |
-| `vector_rag` | Dense similarity search over raw document chunks in Chroma. |
-| `hybrid_rag` | BM25 keyword retrieval plus dense vector retrieval, combined with reciprocal-rank fusion (RRF). No knowledge graph. |
+`same FinQA report excerpts/tables -> numeric + text questions -> three RAG answers -> scores -> trained adaptive router -> held-out validation/test`
 
-All three use the same answer model and answer instructions so retrieval is the main difference. GraphRAG still uses text embeddings for entity linking and community ranking, plus optional R-GCN node embeddings for neighborhood expansion. Pure GraphRAG here means no chunks retrieved from the vector database.
+FinQA's original numeric questions and generated local/global/multi-hop/conflict questions share the exact same document bundles. Only source text/tables enter indexes. Gold answers, programs and generated QA remain outside retrieval. FinQA provides report-page excerpts; this workflow does not fetch complete original filings.
 
-## Architecture
+GraphRAG retrieves graph-linked source chunks and community summaries without vector-chunk fallback. VectorRAG uses dense chunk retrieval. Hybrid combines BM25 and dense retrieval through reciprocal rank fusion. All three share the same answer model. The learned LinUCB router selects an engine using document structure and question-only category features; serving uses the trained policy without online updates. GraphRAG currently maps multi-hop/conflict categories to community-summary retrieval rather than dedicated algorithms.
 
-- `backend/app/`: FastAPI, ingestion, graph and vector stores, the three engines, shared LLM transport, judging, and routing.
-- `frontend/index.html`: served at `/` by the backend; supports all three engines and their comparisons.
-- `RL/`: corpus collection, balanced benchmark generation, experiments, and offline router training.
-- `scripts/`: model profile selection and provider checks.
+## Run locally
 
-Documents are chunked into both the graph and vector indexes. Deterministic table parsing and LLM extraction produce graph facts; entity resolution merges aliases. Leiden communities are summarized for global search. Hybrid search reuses the vector index's raw chunks and computes BM25 rankings over the current collection, so no separate ingestion step is needed. The current BM25 implementation scans the collection per request; a large deployment should use a persistent lexical index.
-
-## Hosted model setup
-
-Hosted APIs are the default. No local large-model weights or GPU are required. Chroma embeddings and optional R-GCN training still run in the backend.
-
-The `14b`, `32b`, and `72b` profiles map to `Qwen/Qwen2.5-14B-Instruct`, `Qwen/Qwen2.5-32B-Instruct`, and `Qwen/Qwen2.5-72B-Instruct`. Start with 32B answers, 14B extraction, and 72B question/reference generation and judging. Larger models are candidates for improved quality, not guarantees; use measured results and review references.
-
-These models currently have live Inference Provider mappings on Hugging Face. Provider availability, account access, pricing and supported parameters may change; `scripts/check_models.py` checks current mappings. Hugging Face routes large-model requests to hosted providers, rather than loading models on your PC. A dedicated compatible endpoint can be selected with `LEDGER_API_BASE_URL`.
-
-Official resources: [HF chat-completion API](https://huggingface.co/docs/inference-providers/tasks/chat-completion), [14B model](https://huggingface.co/Qwen/Qwen2.5-14B-Instruct), [32B model](https://huggingface.co/Qwen/Qwen2.5-32B-Instruct), [72B model](https://huggingface.co/Qwen/Qwen2.5-72B-Instruct).
-
-### PowerShell quick start
-
-Run from the project root. Use a Hugging Face token with Inference Providers permission and an account with available inference credits. Set the token in your environment; do not put it in source files.
+Start Ollama, activate the Python environment, and pull the models:
 
 ```powershell
 .\venv\Scripts\Activate.ps1
-python -m pip install -r backend/requirements-api.txt
 python -m pip install -r RL/requirements.txt
-$env:HF_TOKEN = Read-Host "Hugging Face token" -MaskInput
-. .\scripts\use-model.ps1 -Profile 32b -Backend api
-$env:LEDGER_EXTRACTION_MODEL = "Qwen/Qwen2.5-14B-Instruct"
-$env:LEDGER_QUESTION_MODEL = "Qwen/Qwen2.5-72B-Instruct"
-$env:LEDGER_JUDGE_MODEL = "Qwen/Qwen2.5-72B-Instruct"
-python scripts/check_models.py
-```
-
-`-MaskInput` requires PowerShell 7; on Windows PowerShell 5.1 use a secure prompt:
-
-```powershell
-$ledgerCredential = Get-Credential -UserName "hf-token" -Message "Paste the HF token in the password field"
-$env:HF_TOKEN = $ledgerCredential.GetNetworkCredential().Password
-```
-
-To verify credentials with a small completion from each configured model (uses credits):
-
-```powershell
+ollama pull qwen2.5:14b
+. .\scripts\use-ollama.ps1
 python scripts/check_models.py --smoke-test
 ```
 
-Generate a balanced app benchmark from bundled documents, then ingest and evaluate:
+Extraction, query classification, question generation, reference auditing, answering and text judging all use Qwen2.5 14B in separate calls. The helper sets every model role explicitly. Context is 16384 tokens, calls are sequential, and models unload after requests (`keep_alive=0`) to limit simultaneous memory use. Actual speed and memory depend on GPU VRAM and CPU offloading.
+
+Prepare FinQA once (existing downloads/prepared files can be reused), then run the shared-source workflow:
 
 ```powershell
-python RL/generate_benchmark.py --corpus backend/data/sample_docs --output backend/data/benchmark_questions.json --per-category 3
-python backend/run_pipeline.py
+python RL/prepare_finqa.py --train-limit 40 --dev-limit 20 --test-limit 20
+.\scripts\run-local-flow.ps1
+```
+
+The runner stops after validation by default. Choose settings on dev, then run the final test separately with `scripts/run-local-flow.ps1 -StartAt test -Through test`.
+
+Results and the trained policy are stored under `RL/data/local-14b`. Each bundle gets 12 custom questions by default; `-PerCategory 5` targets 20 and uses separate dataset/run folders with a `-c5` suffix. The runner stops after failures and accepts `-StartAt prepare|train|router|dev|test` for recovery. Successful generation, extraction and scored questions are checkpointed.
+
+Train/dev/test report separation is established before custom generation. Settings can be chosen on dev; freeze them before interpreting the test results. FinQA retains its numeric question distribution. Custom generation strictly requires the requested count for each category and fails if source evidence is insufficient. The default subsets are small smoke experiments, not reliable production estimates.
+
+Numeric scoring directly compares an explicit final scalar with FinQA's gold execution value, handling percent/ratio and documented scale conversions plus rounding tolerance. It is **custom scalar-answer accuracy, not official FinQA program execution accuracy**. Text answer scores come from a blinded local 14B judge against audited references/evidence. Numeric/text results and text categories are reported separately. Generated references and judge scores need manual review; a 14B judge can still make correlated errors.
+
+Training defaults to 50% numeric weight and 12.5% per text category. Only train rewards update the bandit; held-out evaluation never updates it. The trained artifact is a small JSON policy; LLM weights are not fine-tuned.
+
+## Serve the trained router
+
+Use the model profile that produced the policy:
+
+```powershell
+. .\scripts\use-ollama.ps1
+Copy-Item RL/data/local-14b/policy.json backend/data/graph_state/query_bandit.json
 python -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000
 ```
 
-Open `http://localhost:8000`. The standalone pipeline replaces the active app indexes. You can instead start the app, ingest documents through its UI, and use the compare endpoint without running a benchmark.
+Open http://localhost:8000, ingest application documents, and select automatic routing. A policy does not copy benchmark indexes into app state. Use matching extraction/answer models; the app rejects incompatible policies.
 
-## Balanced questions and evaluation
-
-Generation requests each category independently, targeting three questions each: local, global, multi-hop, and conflict. It samples excerpts throughout each filing, requires verbatim supporting quotations, checks those quotes against original text, audits reference answers with the judge model, deduplicates questions, and retries deficits. If a balanced set cannot be supported, generation fails explicitly. `--allow-unbalanced` permits a documented shortfall; facts and conflicts are never fabricated to meet a quota.
-
-Local questions require one specific fact; global questions synthesize across sources; multi-hop questions require distinct facts and reasoning; conflict questions compare like-for-like disclosures, including supported consistency. A changed quarterly value alone is not a changed definition or contradiction.
-
-The judge sees shuffled anonymous answer labels, the reference, and its source evidence. Invalid or truncated responses are retried; failed evaluations are reported and excluded from rewards rather than converted into zero grades. Answers, references, quotations, rationales, failures, model IDs and retrieval version are saved for inspection.
-
-Generated references and LLM audits can still be wrong. Review a sample manually. Training metrics are shuffled online simulations, not held-out production accuracy. Defaults use the same model family for generation and judging, so correlated errors remain possible.
-
-## Experiments and training
-
-```powershell
-python RL/fetch_corpora.py --only semiconductors_2025
-python RL/run_experiments.py --corpus semiconductors_2025 --output-dir RL/data/run-32b
-python RL/train_query_bandit.py --results RL/data/run-32b/query_results.jsonl --seeds 20
-python backend/ingest.py --documents RL/data/corpora/semiconductors_2025
-python -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000
-```
-
-Check the SEC User-Agent in the fetcher first. Omit `--corpus` to evaluate all downloaded corpora. The ingest command replaces app indexes with the selected corpus; use `--mode add` to merge documents instead. The experiment runner uses isolated storage under its output directory by default; it does not replace app state. Saved benchmarks are shared under `RL/data/balanced_benchmarks`, so all answer-model comparisons reuse the same questions. Each corpus result is replaced on rerun, and aggregate JSONL files are rebuilt to avoid duplicated rows.
-
-The eight-feature LinUCB policy chooses among all three engines using corpus structure and the question category. Live classification is LLM-based. GraphRAG maps `local` to neighborhood search and the other three categories to community-summary search; there are no dedicated multi-hop or conflict retrieval algorithms yet. The trained policy uses exploitation at serving time without live learning. Old two-engine or incompatible model/retrieval policies fall back to corpus-level rules.
-
-Existing benchmark results and old reward files are historical. Fresh three-engine results use separate files and include retrieval-version metadata; old rewards are rejected by the query-policy trainer.
-
-See [RL/README.md](RL/README.md) for a three-size comparison, index reuse, and training details.
-
-## Deployment
-
-The Docker image runs the app and frontend with hosted LLM calls; it does not load large-model weights. Configure secrets and role overrides in a local `.env` based on `.env.example`:
+For the existing Docker app with Ollama running on your host:
 
 ```powershell
 Copy-Item .env.example .env
-# Edit .env with HF_TOKEN and the desired model settings.
 docker compose up --build -d
+docker compose cp RL/data/local-14b/policy.json ledger:/data/graph_state/query_bandit.json
 ```
 
-Open `http://localhost:8000`, then ingest documents. App state persists in the `ledger-data` volume. To use host-generated benchmark questions in the container:
+Ollama must be reachable from the container; configure its host binding appropriately. The app container stores its indexes in the persistent volume and does not contain model weights.
 
-```powershell
-docker compose cp backend/data/benchmark_questions.json ledger:/data/benchmark_questions.json
-```
+Optional R-GCN training requires `python -m pip install -r backend/requirements-rgcn.txt`. The default app and experiments use the base dependencies.
 
-The image omits PyTorch; R-GCN is optional and skipped. Hosted calls send supplied document context to the selected provider. The app remains a research tool; this deployment recipe serves it locally and does not add user authentication.
+## Code layout
 
-## Configuration and checks
+- `backend/app/`: ingestion, graph construction, retrieval, scoring and app routing.
+- `RL/prepare_finqa.py` and `prepare_shared_benchmark.py`: source bundles and shared numeric/text questions.
+- `RL/run_public_benchmark.py`: three-engine train/validation/test scoring.
+- `RL/train_shared_router.py`: weighted training and policy export.
+- `scripts/run-local-flow.ps1`: the local 14B workflow.
+- `.env.example`: Docker configuration; `backend/requirements-rgcn.txt`: optional graph training dependencies.
 
-| Variable | Purpose / default |
-| --- | --- |
-| `LEDGER_LLM_BACKEND` | `api` (or `ollama`) |
-| `LEDGER_MODEL_PROFILE` | `14b`; selector script defaults to `32b` |
-| `LEDGER_API_BASE_URL` | `https://router.huggingface.co/v1` |
-| `HF_TOKEN` / `LEDGER_API_KEY` | API credential; `LEDGER_API_KEY` takes precedence |
-| `LEDGER_EXTRACTION_MODEL` | Extraction and classification model override |
-| `LEDGER_ANSWER_MODEL` | Shared answer model override |
-| `LEDGER_QUESTION_MODEL` | Question/reference generation model override |
-| `LEDGER_JUDGE_MODEL` | Reference audit and answer judge model override |
-| `LEDGER_API_JSON_MODE` | `false`; enable only for providers supporting JSON response format |
-| `LEDGER_DATA_DIR` | App state directory; defaults to `backend/data` |
-| `LEDGER_OLLAMA_TIMEOUT` | Request timeout for either backend, `900` seconds |
-| `LEDGER_NUM_CTX` | Ollama context window, `32768` |
-| `LEDGER_QA_PER_CATEGORY` | `3` |
-| `LEDGER_QA_INPUT_CHARS` | Source excerpt budget, `48000` characters |
+## Verification and details
 
 ```powershell
 python -m pytest RL/tests -q
 ```
 
-Offline tests cover BM25/RRF, graph-only context, API transport, balanced generation, judge failures, three-engine serving, and bandit learning. They do not measure real hosted-model answer quality.
+See [RL/README.md](RL/README.md) for individual stages, scoring rules and artifacts.

@@ -1,32 +1,8 @@
-"""
-Two routing functions live here now, serving different purposes:
+"""Analyze corpus structure and select a retrieval engine for each question.
 
-  - analyze_corpus() / load_analysis(): UNCHANGED from before. A rule-based,
-    explainable, corpus-WIDE description of structure (cross-doc entity
-    overlap, community modularity, R-GCN validation AUC). Still powers the
-    descriptive /api/corpus-analysis endpoint, and still serves as the
-    FALLBACK for route_query() below when no trained query-level bandit is
-    available yet.
-
-  - route_query(question): NEW. The actual per-QUESTION engine decision
-    used by /api/query when engine="auto". Real 12-corpus evaluation data
-    showed the corpus-wide recommendation above doesn't predict engine
-    performance well -- the two corpora with the HIGHEST cross-document
-    structure (same-company, multiple quarters) were both won by vector
-    RAG overall, because most individual questions in them were still
-    simple lookups. Which engine wins depends on the QUESTION, not just
-    the corpus it came from. route_query() combines the corpus's doc-level
-    structure with a live classification of the question itself
-    (query_engine.classify_query: local/global/multi_hop/conflict) and
-    scores both engines using a trained LinUCB bandit (see
-    RL/train_query_bandit.py for training, backend/app/query_bandit.py for
-    the implementation both training and serving share).
-
-Only affects the single-answer "Ask" endpoint (/api/query) when the person
-selects "Auto". Benchmark, Communities, and Knowledge Graph are unaffected
--- the benchmark specifically must keep comparing both engines head-to-head
-regardless of what either router would pick, or it stops measuring anything.
-"""
+A trained three-engine LinUCB policy uses document features and the predicted
+question category. When no compatible policy exists, routing uses the corpus
+recommendation. Benchmark comparisons always evaluate all three engines."""
 from __future__ import annotations
 import json
 import traceback
@@ -130,7 +106,7 @@ def route_query(question: str) -> Tuple[str, str]:
 
     Falls back to the static corpus-level recommendation (analyze_corpus)
     if: no documents are ingested, no trained query bandit exists yet
-    (run RL/train_query_bandit.py to produce one), or anything about
+    (train and deploy the policy using scripts/run-local-flow.ps1 to produce one), or anything about
     classification/scoring fails -- a routing decision should degrade
     gracefully, not 500 the whole query.
     """
@@ -140,7 +116,7 @@ def route_query(question: str) -> Tuple[str, str]:
 
     if not QUERY_BANDIT_PATH.exists():
         return _fallback_to_corpus_analysis(
-            "fallback: no trained query-level router yet, run RL/train_query_bandit.py"
+            "fallback: no trained query-level router yet, train and deploy the policy using scripts/run-local-flow.ps1"
         )
 
     try:

@@ -39,3 +39,6 @@ chroma/
 # Generated files
 output/
 outputs/
+
+# Local API credentials
+/secrets.txt

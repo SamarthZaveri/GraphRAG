@@ -1,26 +1,18 @@
-"""
-Ingestion: chunk raw document text and extract (entity, relation, entity)
-triples from each chunk using a local Ollama model with a strict JSON schema.
+"""Extract financial entities and relationships through the configured LLM.
 
-DIAGNOSTIC NOTE (added while investigating slow ingestion): per-chunk
-timing added to extract_from_chunk and a chunk-count summary added to
-extract_document, no behavior change. Ingestion times have grown a lot
-(15 min to 90+ min per corpus across different runs) and extraction is the
-dominant cost, but WHY wasn't measured -- could be call count (many
-chunks), per-call latency (slow generation), or Ollama serializing
-concurrent requests despite EXTRACTION_CONCURRENCY=4 (see config.py's own
-comment: this concurrency setting's real effect depends on Ollama's
-OLLAMA_NUM_PARALLEL server setting, which has never been confirmed set).
-This print output is what tells us which lever actually matters instead
-of guessing.
+Tables are parsed separately; narrative chunks use bounded output-token retries
+and report per-chunk progress without accepting truncated model responses.
 """
 from __future__ import annotations
 import time
+import hashlib
+import json
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import List
 
 from . import config
-from .ollama_client import chat_json
+from .llm_client import chat_json, OutputTruncatedError, LLMError
 from .models import ExtractionResult, Entity, Triple
 
 
@@ -92,6 +84,7 @@ Rules:
   worse than a slightly longer quote.
 - Only extract what is actually supported by the text. Do not invent facts, and never invent or
   round numbers — copy figures exactly as written.
+- Keep descriptions brief and avoid duplicate entities or triples.
 - Return ONLY valid JSON matching this schema, nothing else, no markdown fences, no preamble:
 
 {
@@ -103,10 +96,49 @@ Rules:
 
 def extract_from_chunk(chunk: dict) -> ExtractionResult:
     t0 = time.time()
-    data = chat_json(
-        config.EXTRACTION_MODEL, EXTRACTION_SYSTEM_PROMPT, chunk["text"], max_tokens=1500,
-    )
+    fingerprint = hashlib.sha256(json.dumps({
+        "version": 1, "chunk": chunk, "model": config.EXTRACTION_MODEL,
+        "backend": config.LLM_BACKEND,
+        "endpoint": config.API_BASE_URL if config.LLM_BACKEND == "api" else config.OLLAMA_HOST,
+        "prompt": EXTRACTION_SYSTEM_PROMPT, "thinking": config.NVIDIA_THINKING,
+    }, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    cache_path = config.DATA_DIR / "extraction_cache" / (fingerprint + ".json")
+    if cache_path.exists():
+        try:
+            result = ExtractionResult.model_validate_json(cache_path.read_text(encoding="utf-8"))
+            if result.doc_id == chunk["doc_id"] and result.chunk_id == chunk["chunk_id"]:
+                print(f"    [extract] {chunk['chunk_id']}: reused checkpoint", flush=True)
+                return result
+        except (ValueError, OSError):
+            pass  # Recompute corrupt checkpoints; never trust unvalidated cache data.
+    budget = config.EXTRACTION_MAX_TOKENS
+    invalid_attempts = 0
+    prompt = EXTRACTION_SYSTEM_PROMPT
+    while True:
+        try:
+            data = chat_json(
+                config.EXTRACTION_MODEL, prompt, chunk["text"], max_tokens=budget,
+            )
+            if isinstance(data.get("entities"), list) and isinstance(data.get("triples"), list):
+                break
+            invalid_attempts += 1
+            if invalid_attempts >= 3:
+                raise LLMError(f"Invalid extraction JSON for {chunk['chunk_id']} after 3 attempts; expected entities and triples lists.")
+            prompt = EXTRACTION_SYSTEM_PROMPT + '\nYour previous response lacked the required lists. Return {"entities": [], "triples": []} if the passage has no supported facts. Otherwise return both lists using the schema. No prose or null values.'
+            print(f"    [extract] {chunk['chunk_id']}: invalid JSON/schema; retry {invalid_attempts+1}/3", flush=True)
+        except OutputTruncatedError:
+            if budget >= config.EXTRACTION_TOKEN_LIMIT:
+                raise OutputTruncatedError(
+                    f"Extraction truncated for {chunk['chunk_id']} at {budget} tokens. "
+                    "Increase LEDGER_EXTRACTION_TOKEN_LIMIT or use smaller narrative chunks."
+                ) from None
+            increased = min(budget * 2, config.EXTRACTION_TOKEN_LIMIT)
+            print(f"    [extract] {chunk['chunk_id']}: output truncated at {budget} tokens; "
+                  f"retrying with {increased}", flush=True)
+            budget = increased
 
+    if not isinstance(data.get("entities"), list) or not isinstance(data.get("triples"), list):
+        raise LLMError(f"Invalid extraction JSON for {chunk['chunk_id']}; expected entities and triples lists.")
     entities = [
         Entity(name=e["name"], type=e.get("type", "Other"), description=e.get("description"),
                source_docs=[chunk["doc_id"]])
@@ -124,10 +156,18 @@ def extract_from_chunk(chunk: dict) -> ExtractionResult:
     elapsed = time.time() - t0
     print(f"    [extract] {chunk['chunk_id']} ({len(chunk['text'])} chars in) -> "
           f"{len(entities)} entities, {len(triples)} triples ({elapsed:.1f}s)")
-    return ExtractionResult(
+    result = ExtractionResult(
         doc_id=chunk["doc_id"], chunk_id=chunk["chunk_id"],
         entities=entities, triples=triples,
     )
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = cache_path.with_suffix("." + uuid.uuid4().hex + ".tmp")
+    try:
+        temporary.write_text(result.model_dump_json(), encoding="utf-8")
+        temporary.replace(cache_path)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return result
 
 
 def extract_document(doc_id: str, text: str) -> "tuple[list[dict], list[ExtractionResult]]":
@@ -164,12 +204,8 @@ def extract_document(doc_id: str, text: str) -> "tuple[list[dict], list[Extracti
         elapsed = time.time() - t0
         avg_per_chunk = elapsed / len(narrative_chunks)
         print(f"  [extract_document] {doc_id}: {len(narrative_chunks)} chunks finished in "
-              f"{elapsed:.1f}s total ({avg_per_chunk:.1f}s/chunk average wall-clock at "
-              f"concurrency={config.EXTRACTION_CONCURRENCY}). Compare this average against the "
-              f"individual per-chunk times printed above: if wall-clock time is close to the SUM "
-              f"of individual chunk times rather than roughly 1/{config.EXTRACTION_CONCURRENCY} "
-              f"of it, Ollama is serializing requests despite the thread pool -- check "
-              f"OLLAMA_NUM_PARALLEL on the server side.")
+              f"{elapsed:.1f}s total ({avg_per_chunk:.1f}s/chunk at "
+              f"concurrency={config.EXTRACTION_CONCURRENCY}, backend={config.LLM_BACKEND}).", flush=True)
         results.extend(llm_results)
 
     return table_chunks + narrative_chunks, results

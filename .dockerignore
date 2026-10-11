@@ -8,3 +8,6 @@ __pycache__
 **/.pytest_cache
 backend/data
 RL/data
+
+# Local API credentials
+/secrets.txt

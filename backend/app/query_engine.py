@@ -24,7 +24,7 @@ from typing import List, Tuple
 
 from . import config
 from .community import load_summaries
-from .ollama_client import chat_json
+from .llm_client import chat_json
 from .answering import generate_answer
 from .graph_store import GraphStore
 from .models import Citation, QueryResponse

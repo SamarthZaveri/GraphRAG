@@ -14,7 +14,7 @@ from .models import (
     IngestResponse, QueryRequest, QueryResponse, CompareResponse,
     BenchmarkSummary,
 )
-from . import query_engine, vector_baseline, benchmark, ollama_client, rgcn, corpus_router, engines
+from . import query_engine, vector_baseline, benchmark, llm_client, rgcn, corpus_router, engines
 
 app = FastAPI(title="Ledger — GraphRAG for Financial Reports")
 
@@ -97,7 +97,7 @@ def status():
     store = GraphStore.load()
     summaries = load_summaries()
     sample_docs = sorted(p.stem for p in config.SAMPLE_DOCS_DIR.glob("*.txt"))
-    ollama_up = ollama_client.is_available()
+    ollama_up = llm_client.is_available()
     rgcn_state = rgcn.load_embeddings()
     rgcn_metrics = rgcn.load_metrics()
     modularity_info = load_modularity()
@@ -109,7 +109,7 @@ def status():
         "doc_ids": sorted(store.ingested_doc_ids()) if store else [],
         "sample_docs_available": sample_docs,
         "ollama_available": ollama_up,
-        "ollama_models": ollama_client.list_models() if ollama_up else [],
+        "ollama_models": llm_client.list_models() if ollama_up else [],
         "ollama_host": config.OLLAMA_HOST,
         "llm_backend": config.LLM_BACKEND,
         "llm_available": ollama_up,
@@ -131,7 +131,7 @@ def status():
 
 @app.post("/api/ingest/sample", response_model=IngestResponse)
 def ingest_sample():
-    if not ollama_client.is_available():
+    if not llm_client.is_available():
         raise HTTPException(400, "LLM endpoint unavailable. Check HF_TOKEN/API configuration or start your configured Ollama server.")
     paths = sorted(config.SAMPLE_DOCS_DIR.glob("*.txt"))
     if not paths:
@@ -147,7 +147,7 @@ def ingest_sample():
 async def ingest_upload(files: List[UploadFile] = File(...), mode: str = Form("add")):
     if mode not in ("add", "replace"):
         raise HTTPException(400, "mode must be 'add' or 'replace'")
-    if not ollama_client.is_available():
+    if not llm_client.is_available():
         raise HTTPException(400, "LLM endpoint unavailable. Check HF_TOKEN/API configuration or start your configured Ollama server.")
     config.UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
     saved_paths = []

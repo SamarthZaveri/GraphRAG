@@ -8,8 +8,6 @@ from unittest.mock import Mock, patch
 import numpy as np
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "backend"))
 
 
 def test_bm25_preserves_periods_and_exact_metric_names():
@@ -125,20 +123,19 @@ def test_api_retries_rate_limit_and_rejects_truncated_output():
 
 
 def test_three_arm_training_and_legacy_reward_rejection(tmp_path):
-    import train_query_bandit as trainer
+    import train_shared_router as trainer
     from app import config
     from app.router_features import build_query_context
     context = build_query_context(np.array([0.2, 0.2, 0.2, 1]), "local").tolist()
     rows = [{"corpus": "c", "question": f"q{i}", "category": "local", "context": context,
-             "reward_graphrag": 0.1, "reward_vector_rag": 0.4, "reward_hybrid_rag": 0.95,
+             "reward_graphrag": 0.1, "reward_vector_rag": 0.4, "reward_hybrid_rag": 0.95, "sample_weight": 1,
              "metadata": {"retrieval_version": config.RETRIEVAL_VERSION, "answer_model": "m", "judge_model": "j", "extraction_model": "e", "llm_backend": "api"}} for i in range(80)]
-    policy, log = trainer.run_training(rows, 1.0, 0)
+    policy = trainer.train(rows, 1.0, 0)
     assert max(policy.arms, key=lambda arm: policy.predicted_reward(arm, context)) == "hybrid_rag"
     legacy = tmp_path / "legacy.jsonl"
     legacy.write_text(json.dumps({k: v for k, v in rows[0].items() if k != "metadata"}))
-    with patch.object(trainer, "RESULTS_PATH", legacy):
-        with pytest.raises(ValueError, match="Historical"):
-            trainer.load_results()
+    with pytest.raises(ValueError, match="Historical"):
+        trainer.load_results(legacy)
 
 
 def test_api_selects_hybrid_and_comparison_includes_all_three():
@@ -150,3 +147,164 @@ def test_api_selects_hybrid_and_comparison_includes_all_three():
     assert result.engine_used == "hybrid_rag"
     with patch.object(main.query_engine, "answer_question", return_value=response("graph", "Q?")), patch.object(main.vector_baseline, "answer_question", return_value=response("vector", "Q?")), patch.object(main.engines, "answer_question", side_effect=response):
         assert main.query_compare(models.QueryRequest(question="Q?")).hybrid_rag.answer == "hybrid_rag"
+
+
+def test_nvidia_nemotron_request_controls_thinking():
+    from app import config, llm_client
+    response = Mock(ok=True, status_code=200)
+    response.json.return_value = {"choices": [{"finish_reason": "stop", "message": {"content": '{"ok": true}'}}]}
+    with patch.object(config, "LLM_BACKEND", "api"), patch.object(config, "API_KEY", "test-token"), patch.object(config, "API_BASE_URL", "https://integrate.api.nvidia.com/v1"), patch.object(config, "NVIDIA_THINKING", False), patch.object(llm_client.requests, "post", return_value=response) as post:
+        assert llm_client.chat_json("nvidia/nemotron-3-super-120b-a12b", "Return JSON", "Question") == {"ok": True}
+    assert post.call_args.kwargs["json"]["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+@pytest.mark.parametrize("error, expected", [
+    ("ConnectTimeout", "Connection timed out"),
+    ("ReadTimeout", "Response timed out"),
+    ("SSLError", "TLS handshake"),
+    ("ProxyError", "Proxy connection failed"),
+    ("ConnectionError", "DNS lookup failed"),
+])
+def test_transport_errors_are_actionable_and_do_not_expose_credentials(error, expected):
+    from app import config, llm_client
+    failure = getattr(llm_client.requests.exceptions, error)("getaddrinfo failed; https://user:secret@proxy.invalid")
+    with patch.object(config, "LLM_BACKEND", "api"), patch.object(config, "API_KEY", "test-token"), patch.object(config, "LLM_RETRIES", 1), patch.object(llm_client.requests, "post", side_effect=failure):
+        with pytest.raises(llm_client.LLMError) as caught:
+            llm_client.chat("model", "system", "user")
+    assert expected in str(caught.value)
+    assert "secret" not in str(caught.value)
+    assert "test-token" not in str(caught.value)
+
+
+def test_network_probe_does_not_send_api_key(capsys):
+    import importlib.util
+    from app import config
+    spec = importlib.util.spec_from_file_location("check_models", Path(__file__).resolve().parents[2] / "scripts" / "check_models.py")
+    checker = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(checker)
+    with patch.object(config, "LLM_BACKEND", "api"), patch.object(config, "API_KEY", "test-token"), patch.object(checker.requests, "get", return_value=Mock(status_code=401)) as get:
+        checker.check_network()
+    assert "headers" not in get.call_args.kwargs
+    assert get.call_args.kwargs["timeout"] == (10, 20)
+    assert "HTTPS works" in capsys.readouterr().out
+
+
+
+def test_evidence_allows_only_whitespace_changes_and_saves_original():
+    import generate_benchmark as generator
+    text = "Revenue was\n 100 million in Q2\t2026."
+    q = {"question": "Revenue?", "category": "local", "reference_answer": "100 million", "reasoning": "Quoted metric", "evidence": [{"doc_id": "a", "quote": "Revenue was 100 million in Q2 2026."}]}
+    cleaned = generator.clean_question(q, "local", {"a": text}, set())
+    assert cleaned["evidence"][0]["quote"] == text
+    q["evidence"][0]["quote"] = "Revenue was 101 million in Q2 2026."
+    rejected = []
+    assert generator.clean_question(q, "local", {"a": text}, set(), rejected) is None
+    assert "Quotation not found" in rejected[0]
+
+
+def test_audit_rejections_feed_back_into_next_generation_attempt():
+    import generate_benchmark as generator
+    source = "Acme revenue was 100 million and profit was 20 million."
+    calls = Counter()
+    saw_feedback = []
+    def chat(model, system, user, **kwargs):
+        if system.startswith("Audit"):
+            category = json.loads(user)[0]["category"]
+            valid = calls[category] > 1
+            return {"checks": [{"index": 0, "valid": valid, "reason": "Use a supported unit"}]}
+        category = next(c for c in generator.CATEGORIES if f"category '{c}'" in system)
+        calls[category] += 1
+        if calls[category] > 1:
+            saw_feedback.append("Use a supported unit" in user)
+        return {"questions": [{"question": category + " question?", "category": category, "reference_answer": "100", "reasoning": "Evidence", "evidence": [{"doc_id": "a", "quote": "Acme revenue was 100 million"}, {"doc_id": "a", "quote": "profit was 20 million."}]}]}
+    with patch.object(generator, "chat_json", side_effect=chat):
+        questions = generator.generate_benchmark_for_corpus([source], ["a"], per_category=1)
+    assert len(questions) == 4
+    assert len(saw_feedback) == 4 and all(saw_feedback)
+
+
+
+
+
+def test_extraction_retries_truncation_with_larger_budget(isolated_extraction_cache):
+    from app import config, extraction, llm_client
+    chunk = {"doc_id": "a", "chunk_id": "a::chunk0", "text": "Revenue was 10 million."}
+    valid = {"entities": [{"name": "Acme", "type": "Company"}], "triples": []}
+    with patch.object(config, "EXTRACTION_MAX_TOKENS", 4096), patch.object(config, "EXTRACTION_TOKEN_LIMIT", 16384), patch.object(extraction, "chat_json", side_effect=[llm_client.OutputTruncatedError("truncated"), valid]) as chat:
+        result = extraction.extract_from_chunk(chunk)
+    assert [call.kwargs["max_tokens"] for call in chat.call_args_list] == [4096, 8192]
+    assert result.entities[0].name == "Acme"
+
+
+def test_extraction_truncation_retries_are_bounded(isolated_extraction_cache):
+    from app import config, extraction, llm_client
+    chunk = {"doc_id": "a", "chunk_id": "a::chunk0", "text": "Revenue was 10 million."}
+    with patch.object(config, "EXTRACTION_MAX_TOKENS", 4096), patch.object(config, "EXTRACTION_TOKEN_LIMIT", 10000), patch.object(extraction, "chat_json", side_effect=llm_client.OutputTruncatedError("truncated")) as chat:
+        with pytest.raises(llm_client.OutputTruncatedError, match="a::chunk0 at 10000"):
+            extraction.extract_from_chunk(chunk)
+    assert [call.kwargs["max_tokens"] for call in chat.call_args_list] == [4096, 8192, 10000]
+
+
+def test_extraction_does_not_retry_other_llm_errors_with_more_tokens(isolated_extraction_cache):
+    from app import extraction, llm_client
+    chunk = {"doc_id": "a", "chunk_id": "a::chunk0", "text": "Revenue was 10 million."}
+    with patch.object(extraction, "chat_json", side_effect=llm_client.LLMError("HTTP 401")) as chat:
+        with pytest.raises(llm_client.LLMError, match="HTTP 401"):
+            extraction.extract_from_chunk(chunk)
+    assert chat.call_count == 1
+
+
+@pytest.fixture
+def isolated_extraction_cache(tmp_path, monkeypatch):
+    from app import config
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    return tmp_path
+
+
+def test_rate_limit_honors_retry_after_and_eventually_succeeds():
+    from app import config, llm_client
+    limited = Mock(ok=False, status_code=429, headers={"Retry-After": "45"})
+    success = Mock(ok=True, status_code=200)
+    success.json.return_value = {"choices": [{"message": {"content": "ok"}}]}
+    with patch.object(config, "LLM_BACKEND", "api"), patch.object(config, "API_KEY", "test"), patch.object(llm_client.requests, "post", side_effect=[limited, success]), patch.object(llm_client.time, "sleep") as sleep:
+        assert llm_client.chat("m", "s", "u") == "ok"
+    sleep.assert_called_once_with(45)
+
+
+def test_persistent_rate_limit_has_bounded_retries():
+    from app import config, llm_client
+    limited = Mock(ok=False, status_code=429, headers={})
+    with patch.object(config, "LLM_BACKEND", "api"), patch.object(config, "API_KEY", "test"), patch.object(config, "RATE_LIMIT_ATTEMPTS", 3), patch.object(llm_client.requests, "post", return_value=limited) as post, patch.object(llm_client.time, "sleep") as sleep:
+        with pytest.raises(llm_client.LLMError, match="quota persists"):
+            llm_client.chat("m", "s", "u")
+    assert post.call_count == 3
+    assert [call.args[0] for call in sleep.call_args_list] == [15, 30]
+
+
+def test_retry_after_http_date():
+    from app import llm_client
+    response = Mock(headers={"Retry-After": "Thu, 01 Jan 1970 00:02:00 GMT"})
+    with patch.object(llm_client.time, "time", return_value=100):
+        assert llm_client.rate_limit_delay(response, 0) == 20
+
+
+def test_checkpoint_reuses_success_and_invalidates_changed_source(isolated_extraction_cache):
+    from app import extraction
+    chunk = {"doc_id": "a", "chunk_id": "a::chunk0", "text": "Revenue was 10 million."}
+    valid = {"entities": [{"name": "Acme", "type": "Company"}], "triples": []}
+    with patch.object(extraction, "chat_json", return_value=valid) as chat:
+        first = extraction.extract_from_chunk(chunk)
+        assert extraction.extract_from_chunk(chunk) == first
+        assert chat.call_count == 1
+        extraction.extract_from_chunk({**chunk, "text": "Revenue was 11 million."})
+        assert chat.call_count == 2
+    assert len(list((isolated_extraction_cache / "extraction_cache").glob("*.json"))) == 2
+
+
+def test_failed_extraction_creates_no_checkpoint(isolated_extraction_cache):
+    from app import extraction, llm_client
+    chunk = {"doc_id": "a", "chunk_id": "a::chunk0", "text": "Revenue was 10 million."}
+    with patch.object(extraction, "chat_json", return_value={}):
+        with pytest.raises(llm_client.LLMError, match="Invalid extraction JSON"):
+            extraction.extract_from_chunk(chunk)
+    assert not (isolated_extraction_cache / "extraction_cache").exists()

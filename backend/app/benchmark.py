@@ -5,7 +5,7 @@ import json
 import math
 import random
 from . import config, engines
-from .ollama_client import chat_json, LLMError
+from .llm_client import chat_json, LLMError
 from .models import BenchmarkQuestion, BenchmarkResult, BenchmarkSummary
 
 
@@ -66,11 +66,6 @@ def judge_answers(question, reference, answers, evidence=None):
     raise JudgeError("Invalid judge scores after retries; no reward recorded.")
 
 
-def judge(question, reference, answer_a, answer_b):
-    # Compatibility for the separate historical two-engine ablation runner.
-    result = judge_answers(question, reference, {"graphrag": answer_a, "vector_rag": answer_b})
-    return {"score_a": result["graphrag"]["score"], "score_b": result["vector_rag"]["score"],
-            "rationale": " | ".join(f"{e}: {v['rationale']}" for e, v in result.items())}
 
 
 def evaluate_question(q):

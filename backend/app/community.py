@@ -25,7 +25,7 @@ import networkx as nx
 from . import config
 from .graph_store import GraphStore
 from .models import CommunitySummary
-from .ollama_client import chat_json
+from .llm_client import chat_json
 
 LEIDEN_RESOLUTIONS_TO_TRY = [0.5, 0.75, 1.0, 1.25, 1.5]
 

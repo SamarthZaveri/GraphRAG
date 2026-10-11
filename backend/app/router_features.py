@@ -1,46 +1,9 @@
-"""
-Single source of truth for the engine-router's feature computation --
-used both by RL/*.py during offline training (via a thin re-export shim
-at RL/features.py) and by corpus_router.py at live query-serving time.
+"""Document and question features shared by offline training and serving.
 
-Previously this logic lived only in RL/features.py, which meant the live
-app couldn't reuse it without backend importing from the RL/ folder --
-backwards, since backend/app must run standalone and RL/ is meant to
-depend on backend, not the other way around. This is the fix: the real
-implementation lives here now.
-
-REVISION HISTORY (kept from the original RL/features.py, since the same
-reasoning still applies): started as a 6-feature vector including
-community_modularity and rgcn_val_auc computed over the WHOLE graph. Both
-saturated high (0.76-0.97) on almost every real corpus tested, including
-"control" corpora with no real cross-document structure -- the table
-parser creates dense intra-document structure regardless of whether
-there's real structure connecting documents. Also tried and dropped:
-doc_pair_connectivity (saturated at 1.0 for nearly all multi-doc corpora
--- real financial filings share generic boilerplate entities regardless
-of relatedness) and cross_doc_subgraph_modularity (statistically unstable
-on small subgraphs -- an unrelated-companies corpus scored on par with
-genuine same-company-multi-quarter corpora).
-
-What survived real-data validation, kept here:
-  - cross_doc_entity_fraction: consistently separated genuinely-linked
-    multi-quarter/same-company corpora from everything else.
-  - entity_recurrence_depth: informative beyond raw doc count -- a 3-doc
-    industry-cluster corpus caps below full recurrence (no single entity
-    spans all 3 docs), a genuine multi-quarter corpus hits full recurrence.
-  - num_docs_normalized, bias: kept as-is.
-
-SECOND FINDING (12-corpus real evaluation): even these doc-level features,
-correctly computed, don't predict engine performance well -- the two
-corpora with the HIGHEST cross-document structure were both won by vector
-RAG overall. Conclusion: which engine wins depends on the QUESTION asked,
-not just the corpus. See build_query_context() below, which is what
-corpus_router.route_query() actually uses for live routing decisions --
-extract_features() below is doc-level only and is kept for descriptive
-use (corpus_router.analyze_corpus(), the /api/corpus-analysis endpoint)
-and as an input to build_query_context(), not as a routing decision by
-itself anymore.
-"""
+Document features measure cross-document entity fraction, maximum entity
+recurrence and document count. Query contexts add four predicted category
+indicators and a bias, giving eight features. Gold task labels and authored
+categories never enter the serving context."""
 from __future__ import annotations
 import networkx as nx
 import numpy as np
@@ -86,13 +49,8 @@ def _entity_recurrence_depth(graph: nx.MultiDiGraph) -> float:
     return min(max_depth / 10.0, 1.0)
 
 
-def extract_features(store, modularity: float | None = None, rgcn_val_auc: float | None = None) -> np.ndarray:
-    """
-    Doc-level structural features only. `modularity` and `rgcn_val_auc`
-    params are kept in the signature for call-site compatibility with
-    RL/run_experiments.py but are IGNORED -- both were dropped from the
-    vector after real-data validation (see module docstring).
-    """
+def extract_features(store) -> np.ndarray:
+    """Return normalized document structure and a bias term."""
     graph = store.graph
     doc_ids = store.ingested_doc_ids()
 

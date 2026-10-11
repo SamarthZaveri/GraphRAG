@@ -110,7 +110,7 @@ class EntityResolver:
         if cache_key in self._llm_confirm_cache:
             return self._llm_confirm_cache[cache_key]
         try:
-            from .ollama_client import chat_json
+            from .llm_client import chat_json
             data = chat_json(
                 config.EXTRACTION_MODEL, MERGE_CONFIRM_SYSTEM_PROMPT,
                 f"Entity A: {name_a} — {desc_a}\nEntity B: {name_b} — {desc_b}",

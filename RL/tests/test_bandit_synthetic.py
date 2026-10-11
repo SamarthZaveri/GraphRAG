@@ -11,8 +11,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-from bandit import LinUCBBandit
+from app.query_bandit import LinUCBBandit
 
 
 def run_episode(bandit, context_fn, reward_fn, rounds, rng):
