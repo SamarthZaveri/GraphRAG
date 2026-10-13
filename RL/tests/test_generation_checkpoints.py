@@ -192,3 +192,16 @@ def test_legacy_local_endpoint_fingerprint_migrates_without_model_calls(tmp_path
         resumed = generator.generate_benchmark_for_corpus(texts, ids, 1, checkpoint_path=path)
     assert len(resumed) == 4
     assert path.with_suffix(".previous.json").exists()
+
+
+def test_focused_source_budget_preserves_selected_document_context():
+    import generate_benchmark as generator
+    texts = ["First plan amendment reduced obligations.\n\n" + "Other background information. " * 70 + "\n\nSecond plan amendment affected income.",
+             "Another company reported financial results."]
+    with patch.object(config, "QA_INPUT_CHARS", 2400):
+        _, catalog = generator.source_catalog(texts, ["a", "b"])
+        context, active, assigned = generator.attempt_sources(catalog, ["a", "b"], "multi_hop", 0, [], sources=dict(zip(["a", "b"], texts)))
+    assert assigned == ["a"]
+    assert len(context) <= 2400
+    assert "First plan amendment" in context and "Second plan amendment" in context
+    assert all(e["quote"] in texts[0] for e in active.values())

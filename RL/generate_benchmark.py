@@ -74,13 +74,16 @@ def source_catalog(doc_texts, doc_ids):
     return "\n\n".join(blocks), catalog
 
 
-def attempt_sources(catalog, doc_ids, category, attempt, approved):
+def attempt_sources(catalog, doc_ids, category, attempt, approved, sources=None):
     """Rotate smaller source sets, starting with documents not yet used."""
     usage = Counter(e["doc_id"] for q in approved for e in q.get("evidence", []))
     ordered = sorted(doc_ids, key=lambda doc: usage[doc])
     start = attempt % len(ordered)
     count = 2 if category == "global" or (category == "multi_hop" and attempt % 2) else 1
     assigned = [ordered[(start + i) % len(ordered)] for i in range(min(count, len(ordered)))]
+    if sources is not None:
+        context, active = source_catalog([sources[doc] for doc in assigned], assigned)
+        return context, active, assigned
     active = {ref: item for ref, item in catalog.items() if item["doc_id"] in assigned}
     blocks = []
     for doc_id in assigned:
@@ -168,7 +171,12 @@ relabeling. Return JSON: {"checks": [{"index": 0, "valid": true, "reason": "..."
 Do not approve based on the author's reasoning without checking the quotations.
 Evidence source_context is an original source window supplied by the validator. Use it to
 check nearby dates, units and table headers; do not infer ambiguous column alignment or
-missing facts. Global questions must synthesize a theme, not simply list unrelated metrics.
+missing facts. Distinguish explicitly labeled years from stray PDF typography codes such as
+2019 in possessive phrases or 2013 between a note number and its title. These codes alone do
+not override a table column year. Do not multiply a reported amount by a count unless the
+amount is explicitly per item; if aggregation is ambiguous, reject for ambiguity rather than
+inventing an alternative calculation. Trace pronouns such as this amendment to their stated
+antecedent; amendments to different benefit plans must not be conflated. Global questions must synthesize a theme, not simply list unrelated metrics.
 A global question may synthesize a clearly named subset of companies, provided it uses at
 least two documents; it need not mention every document. Consistency is a valid conflict
 answer. Different fiscal periods may be compared for growth calculations when stated clearly,
@@ -249,7 +257,7 @@ def generate_benchmark_for_corpus(doc_texts, doc_ids, per_category=None, allow_u
             if needed <= 0:
                 break
             focused_context, active_catalog, assigned = attempt_sources(
-                catalog, doc_ids, category, attempt, category_questions)
+                catalog, doc_ids, category, attempt, category_questions, sources=sources)
             example_refs = []
             for doc in assigned:
                 refs = [ref for ref, item in active_catalog.items() if item["doc_id"] == doc and not item["quote"].startswith("SOURCE:")]
