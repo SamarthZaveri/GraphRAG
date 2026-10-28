@@ -66,3 +66,24 @@ MAX_UPLOAD_FILES = int(os.environ.get("LEDGER_MAX_UPLOAD_FILES", "5"))
 MAX_UPLOAD_MB = float(os.environ.get("LEDGER_MAX_UPLOAD_MB", "10"))
 ALLOWED_UPLOAD_EXTENSIONS = (".pdf", ".txt", ".md")
 CORS_ORIGINS = [o.strip() for o in os.environ.get("LEDGER_CORS_ORIGINS", "*").split(",") if o.strip()]
+
+# Public deployment guardrails. In public mode the shared corpus is read-only without the admin token;
+# visitors upload into private, expiring workspaces.
+PUBLIC_MODE = os.environ.get("LEDGER_PUBLIC_MODE", "false").lower() == "true"
+ADMIN_TOKEN = os.environ.get("LEDGER_ADMIN_TOKEN", "")
+WORKSPACES_DIR = DATA_DIR / "workspaces"
+WORKSPACE_TTL_HOURS = float(os.environ.get("LEDGER_WORKSPACE_TTL_HOURS", "24"))
+MAX_WORKSPACES = int(os.environ.get("LEDGER_MAX_WORKSPACES", "100"))
+MAX_WORKSPACE_DOCS = int(os.environ.get("LEDGER_MAX_WORKSPACE_DOCS", "10"))
+MAX_WORKSPACE_CHARS = int(os.environ.get("LEDGER_MAX_WORKSPACE_CHARS", "400000"))
+# Sliding-window rate limits per client IP, as "requests/seconds".
+RATE_LIMITS = {
+    "query": os.environ.get("LEDGER_RATE_QUERY", "20/60"),
+    "compare": os.environ.get("LEDGER_RATE_COMPARE", "6/60"),
+    "ingest": os.environ.get("LEDGER_RATE_INGEST", "6/3600"),
+    "default": os.environ.get("LEDGER_RATE_DEFAULT", "240/60"),
+}
+TRUST_PROXY = os.environ.get("LEDGER_TRUST_PROXY", "false").lower() == "true"
+# Concurrent LLM-backed requests admitted at once; the rest get a fast 503 instead of a long hang.
+MAX_CONCURRENT_LLM_REQUESTS = int(os.environ.get("LEDGER_MAX_CONCURRENT_LLM_REQUESTS", "4"))
+LLM_QUEUE_WAIT_SECONDS = float(os.environ.get("LEDGER_LLM_QUEUE_WAIT_SECONDS", "3"))

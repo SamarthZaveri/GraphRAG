@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import List, Optional
 import json
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import config
@@ -16,17 +16,22 @@ from .models import (
     BenchmarkSummary,
 )
 from . import vector_baseline, benchmark, llm_client, rgcn, corpus_router, engines, telemetry, metrics_store, jobs
+from . import guard, workspace
 import re
 
 app = FastAPI(title="Ledger — Adaptive RAG Router for Financial Reports")
 
+# Starlette runs the last-added middleware first: CORS wraps the guard, so 429s carry CORS headers too.
+app.add_middleware(guard.GuardMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=config.CORS_ORIGINS,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Retry-After", "X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Group"],
 )
+_admin_only = [Depends(guard.require_admin_in_public_mode)]
 
 
 def _read_text_file(path: Path) -> str:
@@ -127,7 +132,19 @@ def health():
 
 
 @app.get("/api/status")
-def status():
+def status(request: Request):
+    """Shared-corpus state and serving configuration, plus the caller's private workspace (if any)."""
+    workspace.cleanup()
+    ws_id = request.headers.get(guard.WORKSPACE_HEADER)
+    ws_info = workspace.info(ws_id) if workspace.valid_id(ws_id) else None
+    with workspace.use(None):
+        return {**_corpus_status(), "workspace": ws_info,
+                "active_jobs": jobs.active(ws_id if ws_info else None),
+                "public_mode": config.PUBLIC_MODE,
+                "rate_limits": config.RATE_LIMITS}
+
+
+def _corpus_status():
     store = GraphStore.load()
     summaries = load_summaries()
     sample_docs = sorted(p.stem for p in config.SAMPLE_DOCS_DIR.glob("*.txt"))
@@ -162,17 +179,21 @@ def status():
         "community_modularity": modularity_info.get("modularity"),
         "router": corpus_router.policy_status(),
         "upload_limits": {"max_files": config.MAX_UPLOAD_FILES, "max_mb": config.MAX_UPLOAD_MB,
-                          "extensions": list(config.ALLOWED_UPLOAD_EXTENSIONS)},
-        "active_jobs": jobs.active(),
+                          "extensions": list(config.ALLOWED_UPLOAD_EXTENSIONS),
+                          "workspace_max_docs": config.MAX_WORKSPACE_DOCS,
+                          "workspace_max_chars": config.MAX_WORKSPACE_CHARS,
+                          "workspace_ttl_hours": config.WORKSPACE_TTL_HOURS},
     }
 
 
 _LLM_DOWN = "LLM endpoint unavailable. Check HF_TOKEN/API configuration or start your configured Ollama server."
 
 
-@app.post("/api/ingest/sample")
+@app.post("/api/ingest/sample", dependencies=_admin_only)
 def ingest_sample():
-    """Queue ingestion of the bundled sample corpus; poll /api/ingest/jobs/{id}."""
+    """Queue ingestion of the bundled sample corpus into the shared corpus; poll /api/ingest/jobs/{id}."""
+    if workspace.current():
+        raise HTTPException(400, "The sample corpus loads into the shared corpus, not a private workspace.")
     if not llm_client.is_available():
         raise HTTPException(400, _LLM_DOWN)
     paths = sorted(config.SAMPLE_DOCS_DIR.glob("*.txt"))
@@ -197,7 +218,8 @@ async def _read_limited(f: UploadFile, limit: int) -> bytes:
     return bytes(content)
 
 
-def _validate_upload(name: str, content: bytes) -> None:
+def _validate_upload(name: str, content: bytes) -> int:
+    """Reject unusable files; returns the extracted text length (for workspace quotas)."""
     if not content.strip():
         raise HTTPException(422, f"{name} is empty.")
     if name.endswith(".pdf"):
@@ -209,22 +231,29 @@ def _validate_upload(name: str, content: bytes) -> None:
             reader = PdfReader(BytesIO(content))
             if reader.is_encrypted:
                 raise HTTPException(422, f"{name} is encrypted.")
-            if not any((page.extract_text() or "").strip() for page in reader.pages[:5]):
+            text = "\n".join(page.extract_text() or "" for page in reader.pages)
+            if not text.strip():
                 raise HTTPException(422, f"{name} has no extractable text (scanned PDF?).")
+            return len(text)
         except HTTPException:
             raise
         except Exception:
             raise HTTPException(422, f"{name} could not be parsed as a PDF.")
     else:
         try:
-            content.decode("utf-8")
+            return len(content.decode("utf-8"))
         except UnicodeDecodeError:
             raise HTTPException(415, f"{name} is not UTF-8 text.")
 
 
 @app.post("/api/ingest/upload")
-async def ingest_upload(files: List[UploadFile] = File(...), mode: str = Form("add")):
-    """Validate uploads (count, size, type, parseability), then queue ingestion as a background job."""
+async def ingest_upload(request: Request, files: List[UploadFile] = File(...), mode: str = Form("add")):
+    """Validate uploads (count, size, type, parseability, workspace quota), then queue ingestion as a
+    background job. With an X-Ledger-Workspace header, files go to that private workspace; without one
+    they go to the shared corpus, which is admin-only on the public deployment."""
+    ws = workspace.current()
+    if ws is None:
+        guard.require_admin_in_public_mode(request)
     if mode not in ("add", "replace"):
         raise HTTPException(400, "mode must be 'add' or 'replace'")
     if len(files) > config.MAX_UPLOAD_FILES:
@@ -238,28 +267,62 @@ async def ingest_upload(files: List[UploadFile] = File(...), mode: str = Form("a
         if Path(name).suffix not in config.ALLOWED_UPLOAD_EXTENSIONS:
             raise HTTPException(415, f"{f.filename}: allowed types are {', '.join(config.ALLOWED_UPLOAD_EXTENSIONS)}.")
         content = await _read_limited(f, limit)
-        _validate_upload(name, content)
-        staged.append((name, content))
+        staged.append((name, content, _validate_upload(name, content)))
+    if ws is not None:
+        chars = _check_workspace_quota(ws, staged, mode)
     # Write only after every file passed, so a rejected batch leaves nothing behind.
-    config.UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    uploads = workspace.uploads_dir()
+    if ws is not None and mode == "replace":
+        for old in uploads.glob("*"):
+            old.unlink(missing_ok=True)
+    uploads.mkdir(parents=True, exist_ok=True)
     saved_paths = []
-    for name, content in staged:
-        dest = config.UPLOADS_DIR / name
+    for name, content, _ in staged:
+        dest = uploads / name
         dest.write_bytes(content)
         saved_paths.append(dest)
+    if ws is not None:
+        workspace.touch(ws, chars=chars)
     return jobs.submit("upload", len(saved_paths),
-                       lambda progress: _traced_ingest("ingest_upload", saved_paths, mode, progress))
+                       lambda progress: _traced_ingest("ingest_upload", saved_paths, mode, progress), owner=ws)
+
+
+def _check_workspace_quota(ws, staged, mode) -> int:
+    """Bound a workspace's documents and text (extraction cost scales with text). Returns the new total chars."""
+    current = workspace.info(ws) if mode == "add" else None
+    existing = set(current["docs"]) if current else set()
+    docs = existing | {Path(name).stem for name, _, _ in staged}
+    if len(docs) > config.MAX_WORKSPACE_DOCS:
+        raise HTTPException(413, f"A workspace holds at most {config.MAX_WORKSPACE_DOCS} documents "
+                                 f"({len(existing)} already uploaded). Use 'replace' to start over.")
+    chars = (current["chars"] if current else 0) + sum(c for _, _, c in staged)
+    if chars > config.MAX_WORKSPACE_CHARS:
+        raise HTTPException(413, f"These files contain {chars:,} characters of text; a workspace allows "
+                                 f"{config.MAX_WORKSPACE_CHARS:,}. Upload fewer or shorter documents.")
+    return chars
+
+
+@app.delete("/api/workspace")
+def delete_workspace():
+    """Let a visitor wipe their private workspace immediately."""
+    ws = workspace.current()
+    if ws is None:
+        raise HTTPException(404, "No workspace.")
+    if jobs.active(ws):
+        raise HTTPException(409, "An ingestion job is still running for this workspace.")
+    workspace.delete(ws)
+    return {"deleted": ws}
 
 
 @app.get("/api/ingest/jobs/{job_id}")
 def get_ingest_job(job_id: str):
-    job = jobs.get(job_id)
+    job = jobs.get(job_id, workspace.current())
     if job is None:
         raise HTTPException(404, "Unknown or expired job.")
     return job
 
 
-@app.get("/api/graph")
+@app.get("/api/graph", dependencies=_admin_only)
 def get_graph():
     store = GraphStore.load()
     if store is None:
@@ -277,12 +340,12 @@ def get_graph():
     return {"nodes": nodes, "links": links}
 
 
-@app.get("/api/communities")
+@app.get("/api/communities", dependencies=_admin_only)
 def get_communities():
     return [s.model_dump() for s in load_summaries()]
 
 
-@app.get("/api/corpus-analysis")
+@app.get("/api/corpus-analysis", dependencies=_admin_only)
 def get_corpus_analysis():
     analysis = corpus_router.load_analysis()
     if analysis is None:
@@ -313,6 +376,11 @@ def _traced_answer(engine: str, question: str, mode: str, endpoint: str, routing
         return run(trace)
 
 
+def _touch_workspace():
+    if workspace.current():
+        workspace.touch(workspace.current())  # active use extends the expiry
+
+
 @app.post("/api/query", response_model=QueryResponse)
 def query(req: QueryRequest):
     """Single-answer query for the Ask tab. engine="auto" now routes PER
@@ -327,7 +395,8 @@ def query(req: QueryRequest):
     query bandit is available yet. "graphrag"/"vector_rag" still force a
     manual choice, unchanged. This routing does NOT apply to
     /api/query/compare, which always runs all three engines by design."""
-    with telemetry.trace() as t:
+    _touch_workspace()
+    with guard.llm_slot(), telemetry.trace() as t:
         try:
             engine = req.engine
             routing = None
@@ -340,6 +409,8 @@ def query(req: QueryRequest):
             resp.engine_used = engine
             resp.engine_reason = routing["reason"] if routing else None
             return resp
+        except HTTPException:
+            raise
         except Exception as e:
             traceback.print_exc()
             metrics_store.record("query", "error", t.summary(), engine=req.engine, detail={"error": str(e)[:300]})
@@ -349,22 +420,26 @@ def query(req: QueryRequest):
 @app.post("/api/query/compare", response_model=CompareResponse)
 def query_compare(req: QueryRequest):
     # Each engine runs under its own trace so per-engine latency/tokens/cost are comparable.
+    _touch_workspace()
     try:
-        answers = {e: _traced_answer(e, req.question, req.mode, "compare") for e in engines.ENGINE_NAMES}
+        with guard.llm_slot():
+            answers = {e: _traced_answer(e, req.question, req.mode, "compare") for e in engines.ENGINE_NAMES}
         return CompareResponse(question=req.question, graphrag=answers["graphrag"],
                                vector_rag=answers["vector_rag"], hybrid_rag=answers["hybrid_rag"])
+    except HTTPException:
+        raise
     except Exception as e:
         traceback.print_exc()
         metrics_store.record("compare", "error", detail={"error": str(e)[:300]})
         raise HTTPException(500, str(e))
 
 
-@app.get("/api/benchmark/questions")
+@app.get("/api/benchmark/questions", dependencies=_admin_only)
 def get_benchmark_questions():
     return [q.model_dump() for q in benchmark.load_questions()]
 
 
-@app.post("/api/benchmark/run", response_model=BenchmarkSummary)
+@app.post("/api/benchmark/run", response_model=BenchmarkSummary, dependencies=_admin_only)
 def run_benchmark():
     try:
         return benchmark.run_benchmark()
@@ -373,7 +448,7 @@ def run_benchmark():
         raise HTTPException(500, str(e))
 
 
-@app.get("/api/benchmark/results")
+@app.get("/api/benchmark/results", dependencies=_admin_only)
 def get_benchmark_results():
     summary = benchmark.load_last_results()
     if summary is None:

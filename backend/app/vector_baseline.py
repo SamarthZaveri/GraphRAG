@@ -15,38 +15,45 @@ from typing import List
 import chromadb
 from chromadb.config import Settings
 
-from . import config
+from . import config, workspace
 from .extraction import chunk_text
 from .answering import generate_answer
 from .models import Citation, QueryResponse
 
 _client = None
-_collection = None
-COLLECTION_NAME = "ledger_vector_baseline"
+_collections: dict = {}  # one collection per workspace; the shared corpus keeps its original name
 
 
-def get_collection():
-    global _client, _collection
+def _get_client():
+    global _client
     if _client is None:
         _client = chromadb.PersistentClient(
             path=str(config.CHROMA_DIR),
             settings=Settings(anonymized_telemetry=False),
         )
-    if _collection is None:
-        _collection = _client.get_or_create_collection(COLLECTION_NAME)
-    return _collection
+    return _client
+
+
+def get_collection():
+    name = workspace.collection_name()
+    if name not in _collections:
+        _collections[name] = _get_client().get_or_create_collection(name)
+    return _collections[name]
+
+
+def drop_collection(name):
+    _collections.pop(name, None)
+    try:
+        _get_client().delete_collection(name)
+    except Exception:
+        pass
 
 
 def reset_collection():
-    global _client, _collection
-    if _client is None:
-        _client = chromadb.PersistentClient(path=str(config.CHROMA_DIR))
-    try:
-        _client.delete_collection(COLLECTION_NAME)
-    except Exception:
-        pass
-    _collection = _client.get_or_create_collection(COLLECTION_NAME)
-    return _collection
+    name = workspace.collection_name()
+    drop_collection(name)
+    _collections[name] = _get_client().get_or_create_collection(name)
+    return _collections[name]
 
 
 def ingest_document(doc_id: str, text: str):

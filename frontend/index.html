@@ -344,6 +344,22 @@ section.block { padding: 64px 0; }
 .swatch { width: 8px; height: 8px; border-radius: 2px; flex: none; }
 .console-bar .btn { margin-left: auto; }
 .chips { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+.chips.recent { margin-top: 8px; }
+.chips.recent .chip i { color: var(--accent-ink); }
+.ask-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-top: 10px; font: 400 11px var(--f-mono); color: var(--ink-3); min-height: 18px; }
+.ask-foot .corpus-pick { display: inline-flex; align-items: center; gap: 8px; }
+.seg.mini button { padding: 5px 10px; font-size: 12px; }
+.seg button:disabled { opacity: .4; cursor: not-allowed; }
+.quota { margin-top: 12px; }
+.quota .meter span { background: linear-gradient(90deg, var(--accent), var(--s-router)); }
+.ws-head { display: flex; align-items: center; gap: 8px; }
+.ws-badge { font: 500 10px var(--f-mono); padding: 3px 7px; border-radius: 5px; background: var(--accent-soft); color: var(--accent-ink); }
+.target { display: flex; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
+.target label { flex: 1; min-width: 200px; display: flex; gap: 10px; align-items: flex-start; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--line); cursor: pointer; background: var(--surface-solid); transition: border-color .2s, box-shadow .2s; }
+.target label:has(input:checked) { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.target input { accent-color: var(--accent); margin-top: 3px; }
+.target b { display: block; font-size: 13.5px; }
+.target span { font-size: 12px; color: var(--ink-3); }
 .chip {
   border: 1px solid var(--line); background: transparent; border-radius: 999px; padding: 6px 12px;
   font-size: 12.5px; color: var(--ink-2); cursor: pointer; transition: border-color .2s, color .2s, background .2s;
@@ -699,6 +715,7 @@ footer b { font: 400 20px var(--f-display); color: var(--ink); }
           <label for="q" class="sr-only">Question</label>
           <textarea id="q" class="qbox" rows="2" placeholder="What was the year-over-year change in net revenue, and what drove it?" required></textarea>
           <div class="chips" id="chips"></div>
+          <div class="chips recent" id="recent"></div>
         </div>
         <div class="console-bar">
           <div class="seg" role="group" aria-label="Engine" id="engine-seg">
@@ -711,6 +728,15 @@ footer b { font: 400 20px var(--f-display); color: var(--ink); }
           <button class="btn primary" type="submit" id="ask-btn">Route &amp; answer <span class="kbd">Ctrl ↵</span></button>
         </div>
       </form>
+      <div class="ask-foot">
+        <span class="corpus-pick">search
+          <span class="seg mini" role="group" aria-label="Corpus to search" id="corpus-seg">
+            <button type="button" data-corpus="shared" aria-pressed="true">Demo corpus</button>
+            <button type="button" data-corpus="mine" aria-pressed="false" disabled>My uploads</button>
+          </span>
+        </span>
+        <span id="rate-note" aria-live="polite"></span>
+      </div>
       <div class="results" id="results" aria-live="polite"></div>
     </div>
   </section>
@@ -724,6 +750,10 @@ footer b { font: 400 20px var(--f-display); color: var(--ink); }
       </div>
       <div class="ingest-grid">
         <div class="card reveal">
+          <div class="target" id="target" role="radiogroup" aria-label="Upload destination">
+            <label><input type="radio" name="target" value="mine" checked><div><b>My private workspace</b><span>Only you can query it. Deleted after inactivity.</span></div></label>
+            <label id="target-shared"><input type="radio" name="target" value="shared"><div><b>Shared corpus</b><span>Changes what every visitor queries.</span></div></label>
+          </div>
           <div class="drop" id="drop" tabindex="0" role="button" aria-label="Add files: drop them here or press Enter to browse">
             <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M14 6h14l10 10v24a2 2 0 0 1-2 2H14a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2Z"/><path d="M28 6v10h10"/><path d="M24 34V22M19 27l5-5 5 5"/></svg>
             <h4>Drop filings here</h4>
@@ -744,7 +774,11 @@ footer b { font: 400 20px var(--f-display); color: var(--ink); }
         </div>
         <div class="side">
           <div class="card reveal">
-            <div class="card-title"><h3>Current corpus</h3><span class="hint" id="corpus-hint"></span></div>
+            <div class="card-title"><div class="ws-head"><h3>My workspace</h3><span class="ws-badge">private</span></div><span class="hint" id="ws-hint"></span></div>
+            <div id="ws"></div>
+          </div>
+          <div class="card reveal">
+            <div class="card-title"><h3>Shared demo corpus</h3><span class="hint" id="corpus-hint"></span></div>
             <div class="corpus-stats" id="corpus-stats"></div>
             <div class="doclist" id="doclist"></div>
           </div>
@@ -826,7 +860,8 @@ const SAMPLES = [
   ['multi_hop', 'How did operating expenses change as a share of revenue, and what drove the change?'],
   ['conflict', 'Are non-GAAP adjustments defined consistently across these filings?'],
 ];
-const state = { status: null, rl: null, split: null, engine: 'auto', mode: 'add', files: [], windowMin: 60, job: null };
+const state = { status: null, rl: null, split: null, engine: 'auto', mode: 'add', files: [], windowMin: 60, job: null,
+  corpus: 'shared', target: 'mine', retryUntil: 0 };
 
 function safeGet(k) { try { return localStorage.getItem(k); } catch { return null; } }
 function safeSet(k, v) { try { localStorage.setItem(k, v); } catch {} }
@@ -842,11 +877,30 @@ const fmt = {
   bytes: b => b < 1024 * 1024 ? `${(b / 1024).toFixed(0)} KB` : `${(b / 1048576).toFixed(1)} MB`,
 };
 
+/* Private workspace id: random, per browser. It only selects a corpus; it is not an auth credential. */
+const WORKSPACE_ID = (() => {
+  let id = safeGet('ledger_workspace');
+  if (!/^[a-f0-9]{24}$/.test(id || '')) {
+    id = [...crypto.getRandomValues(new Uint8Array(12))].map(b => b.toString(16).padStart(2, '0')).join('');
+    safeSet('ledger_workspace', id);
+  }
+  return id;
+})();
+
 async function api(path, opts = {}) {
-  const res = await fetch(API_BASE + path, opts);
+  const { ws, ...init } = opts;
+  if (ws) init.headers = { ...(init.headers || {}), 'X-Ledger-Workspace': WORKSPACE_ID };
+  const res = await fetch(API_BASE + path, init);
   let data = null;
   try { data = await res.json(); } catch {}
-  if (!res.ok) throw new Error((data && (data.detail || data.message)) || `Request failed (${res.status})`);
+  const limit = res.headers.get('X-RateLimit-Limit');
+  if (limit) state.rate = { group: res.headers.get('X-RateLimit-Group'), limit: +limit, remaining: +res.headers.get('X-RateLimit-Remaining') };
+  if (!res.ok) {
+    const err = new Error((data && (data.detail || data.message)) || `Request failed (${res.status})`);
+    err.status = res.status;
+    err.retryAfter = +(res.headers.get('Retry-After') || (data && data.retry_after) || 0);
+    throw err;
+  }
   return data;
 }
 
@@ -976,7 +1030,7 @@ async function heroDemo() {
 /* ───────────── Status ───────────── */
 async function loadStatus() {
   try {
-    const s = state.status = await api('/status');
+    const s = state.status = await api('/status', { ws: true });
     const llm = $('#pill-llm');
     llm.querySelector('.dot').className = 'dot ' + (s.llm_available ? 'ok' : 'bad');
     llm.lastElementChild.textContent = s.llm_available ? `${s.configured_models.answer} · ${s.llm_backend}` : 'LLM offline';
@@ -984,9 +1038,9 @@ async function loadStatus() {
     rp.querySelector('.dot').className = 'dot ' + (r.compatible ? 'ok' : r.deployed ? 'warn' : 'bad');
     rp.lastElementChild.textContent = r.compatible ? 'router live' : r.deployed ? 'router: config mismatch' : 'router: fallback';
     rp.title = r.compatible ? 'Trained router policy deployed and compatible' : 'Routing falls back to a corpus-level rule';
-    renderCorpus(s); renderPolicy(s); renderLimits(s);
+    renderCorpus(s); renderWorkspace(s); renderPolicy(s); renderLimits(s);
     $('#foot-meta').innerHTML = `answer model · ${esc(s.configured_models.answer)}<br>backend · ${esc(s.llm_backend)}<br>api · ${esc(API_BASE)}`;
-    if (s.active_jobs && s.active_jobs.length && !state.job) pollJob(s.active_jobs[0].id);
+    if (s.active_jobs && s.active_jobs.length && !state.job) pollJob(s.active_jobs[0].id, s.active_jobs[0].owner ? true : false);
   } catch (e) {
     const llm = $('#pill-llm');
     llm.querySelector('.dot').className = 'dot bad';
@@ -1002,6 +1056,44 @@ function renderCorpus(s) {
   ].map(([v, k]) => `<div><div class="v">${fmt.int(v)}</div><div class="k">${k}</div></div>`).join('');
   $('#doclist').innerHTML = s.doc_ids.slice(0, 60).map(d => `<span>${esc(d)}</span>`).join('') +
     (s.doc_ids.length > 60 ? `<span>+${s.doc_ids.length - 60} more</span>` : '');
+}
+
+function renderWorkspace(s) {
+  const w = s.workspace, l = s.upload_limits || {};
+  // Public deployments keep the shared corpus read-only, so uploads always go to the workspace.
+  $('#target-shared').hidden = !!s.public_mode;
+  $('#sample-btn').hidden = !!s.public_mode;
+  if (s.public_mode) { state.target = 'mine'; $('#target input[value="mine"]').checked = true; }
+  const mineBtn = $('#corpus-seg [data-corpus="mine"]');
+  const docs = w ? w.docs.length : 0;
+  mineBtn.disabled = !docs;
+  mineBtn.textContent = docs ? `My uploads · ${docs}` : 'My uploads';
+  if (!docs && state.corpus === 'mine') setCorpus('shared');
+  if (!w) {
+    $('#ws-hint').textContent = 'empty';
+    $('#ws').innerHTML = `<p class="note" style="margin:0">Upload filings to get a private corpus that only this browser can query. It holds up to ${l.workspace_max_docs ?? 10} documents and is deleted after ${l.workspace_ttl_hours ?? 24} hours without use.</p>`;
+    return;
+  }
+  const hours = Math.max(0, (w.expires_at * 1000 - Date.now()) / 3600000);
+  $('#ws-hint').textContent = `expires in ${hours >= 1 ? Math.round(hours) + 'h' : Math.max(1, Math.round(hours * 60)) + 'm'}`;
+  const used = w.limits.max_chars ? w.chars / w.limits.max_chars : 0;
+  $('#ws').innerHTML = `
+    <div class="corpus-stats"><div><div class="v">${docs}<small class="mono" style="font-size:12px;color:var(--ink-3)"> / ${w.limits.max_docs}</small></div><div class="k">documents</div></div>
+      <div><div class="v">${fmt.int(w.chars / 1000)}k</div><div class="k">characters of text</div></div></div>
+    <div class="quota"><div class="legend"><span class="mono">text quota ${fmt.pct(used)}</span></div><div class="meter"><span style="width:${Math.min(100, used * 100)}%"></span></div></div>
+    <div class="doclist">${w.docs.map(d => `<span>${esc(d)}</span>`).join('')}</div>
+    <div class="ingest-actions"><button class="btn sm" type="button" id="ws-query">Search my uploads</button><button class="btn sm" type="button" id="ws-delete">Delete workspace</button></div>`;
+  $('#ws-query').onclick = () => { setCorpus('mine'); location.hash = '#ask'; $('#q').focus(); };
+  $('#ws-delete').onclick = async () => {
+    if (!confirm('Delete your private workspace and its documents now?')) return;
+    try { await api('/workspace', { method: 'DELETE', ws: true }); toast('Workspace deleted'); loadStatus(); }
+    catch (err) { toast(err.message, true); }
+  };
+}
+
+function setCorpus(c) {
+  state.corpus = c;
+  $$('#corpus-seg button').forEach(x => x.setAttribute('aria-pressed', x.dataset.corpus === c));
 }
 
 function renderPolicy(s) {
@@ -1023,6 +1115,41 @@ function renderPolicy(s) {
 /* ───────────── Ask ───────────── */
 $('#chips').innerHTML = SAMPLES.map(([c, q]) => `<button type="button" class="chip" data-q="${esc(q)}"><i>${c.replace('_', '-')}</i>${esc(q.length > 64 ? q.slice(0, 62) + '…' : q)}</button>`).join('');
 $('#chips').addEventListener('click', e => { const b = e.target.closest('.chip'); if (b) { $('#q').value = b.dataset.q; $('#q').focus(); } });
+$('#recent').addEventListener('click', e => { const b = e.target.closest('.chip'); if (b) { $('#q').value = b.dataset.q; $('#q').focus(); } });
+$('#corpus-seg').addEventListener('click', e => { const b = e.target.closest('button'); if (b && !b.disabled) setCorpus(b.dataset.corpus); });
+document.addEventListener('keydown', e => {
+  if (e.key === '/' && !/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) { e.preventDefault(); $('#q').focus(); }
+});
+
+function recentQuestions() { try { return JSON.parse(safeGet('ledger_recent') || '[]'); } catch { return []; } }
+function rememberQuestion(q) {
+  safeSet('ledger_recent', JSON.stringify([q, ...recentQuestions().filter(x => x !== q)].slice(0, 5)));
+  renderRecent();
+}
+function renderRecent() {
+  const list = recentQuestions();
+  $('#recent').innerHTML = list.map(q => `<button type="button" class="chip" data-q="${esc(q)}"><i>recent</i>${esc(q.length > 56 ? q.slice(0, 54) + '…' : q)}</button>`).join('');
+}
+
+function renderRate() {
+  const r = state.rate, el = $('#rate-note');
+  if (state.retryUntil > Date.now()) {
+    el.textContent = `rate limited · try again in ${Math.ceil((state.retryUntil - Date.now()) / 1000)}s`;
+    return;
+  }
+  el.textContent = r && (r.group === 'query' || r.group === 'compare')
+    ? `${r.remaining} of ${r.limit} ${r.group === 'compare' ? 'comparisons' : 'questions'} left this minute` : '';
+}
+
+function holdAskButton(seconds) {
+  const btn = $('#ask-btn');
+  state.retryUntil = Date.now() + seconds * 1000;
+  btn.disabled = true;
+  const iv = setInterval(() => {
+    renderRate();
+    if (Date.now() >= state.retryUntil) { clearInterval(iv); btn.disabled = false; state.retryUntil = 0; renderRate(); }
+  }, 250);
+}
 $('#engine-seg').addEventListener('click', e => {
   const b = e.target.closest('button'); if (!b) return;
   state.engine = b.dataset.engine;
@@ -1033,22 +1160,28 @@ $('#q').addEventListener('keydown', e => { if (e.key === 'Enter' && (e.ctrlKey |
 $('#ask-form').addEventListener('submit', async e => {
   e.preventDefault();
   const question = $('#q').value.trim(); if (!question) return;
+  if (state.retryUntil > Date.now()) return;
   const btn = $('#ask-btn'); btn.disabled = true;
   const stop = renderLoading(state.engine);
+  const ws = state.corpus === 'mine';
+  let held = false;
   try {
     if (state.engine === 'compare') {
-      const r = await api('/query/compare', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ question, mode: 'auto' }) });
+      const r = await api('/query/compare', { method: 'POST', ws, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ question, mode: 'auto' }) });
       stop(); renderCompare(r);
     } else {
-      const r = await api('/query', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ question, mode: 'auto', engine: state.engine }) });
+      const r = await api('/query', { method: 'POST', ws, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ question, mode: 'auto', engine: state.engine }) });
       stop(); renderAnswer(r);
     }
+    rememberQuestion(question);
     loadTelemetry();
   } catch (err) {
     stop();
-    $('#results').innerHTML = `<div class="card"><div class="flag bad">error</div><p style="margin:12px 0 0">${esc(err.message)}</p></div>`;
+    const busy = err.status === 429 || err.status === 503;
+    $('#results').innerHTML = `<div class="card"><span class="flag ${busy ? 'warn' : 'bad'}">${err.status === 429 ? 'slow down' : err.status === 503 ? 'busy' : 'error'}</span><p style="margin:12px 0 0">${esc(err.message)}</p></div>`;
+    if (busy && err.retryAfter) { held = true; holdAskButton(err.retryAfter); }
     toast(err.message, true);
-  } finally { btn.disabled = false; }
+  } finally { if (!held) btn.disabled = false; renderRate(); }
 });
 
 function renderLoading(engine) {
@@ -1286,19 +1419,22 @@ $('#file-input').addEventListener('change', e => { addFiles(e.target.files); e.t
 ['dragenter', 'dragover'].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.add('over'); }));
 ['dragleave', 'drop'].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.remove('over'); }));
 drop.addEventListener('drop', e => addFiles(e.dataTransfer.files));
+$('#target').addEventListener('change', e => { state.target = e.target.value; });
 $('#mode-seg').addEventListener('click', e => {
   const b = e.target.closest('button'); if (!b) return;
   state.mode = b.dataset.mode; $$('#mode-seg button').forEach(x => x.setAttribute('aria-pressed', x === b));
 });
 $('#ingest-btn').addEventListener('click', async () => {
-  if (state.mode === 'replace' && !confirm('Replace the whole corpus with these files? Existing documents will be removed.')) return;
+  const mine = state.target === 'mine';
+  if (state.mode === 'replace' && !confirm(mine ? 'Replace the documents in your workspace with these files?'
+    : 'Replace the whole shared corpus with these files? Every visitor is affected.')) return;
   const form = new FormData();
   state.files.forEach(x => form.append('files', x.file));
   form.append('mode', state.mode);
   try {
     $('#ingest-btn').disabled = true;
-    const job = await api('/ingest/upload', { method: 'POST', body: form });
-    state.files = []; renderFiles(); pollJob(job.id);
+    const job = await api('/ingest/upload', { method: 'POST', body: form, ws: mine });
+    state.files = []; renderFiles(); pollJob(job.id, mine);
   } catch (err) { toast(err.message, true); renderFiles(); }
 });
 $('#sample-btn').addEventListener('click', async () => {
@@ -1307,14 +1443,17 @@ $('#sample-btn').addEventListener('click', async () => {
   catch (err) { toast(err.message, true); }
 });
 
-async function pollJob(id) {
+async function pollJob(id, ws = false) {
   state.job = id; renderFiles();
   const t0 = Date.now();
   while (state.job === id) {
     let j;
-    try { j = await api('/ingest/jobs/' + id); } catch (err) { renderJob({ status: 'error', error: err.message }); break; }
+    try { j = await api('/ingest/jobs/' + id, { ws }); } catch (err) { renderJob({ status: 'error', error: err.message }); break; }
     renderJob(j, t0);
-    if (j.status === 'done') { toast('Ingestion complete'); loadStatus(); loadTelemetry(); break; }
+    if (j.status === 'done') {
+      toast(ws ? 'Ingested into your workspace. "My uploads" is now searchable.' : 'Ingestion complete');
+      await loadStatus(); if (ws) setCorpus('mine'); loadTelemetry(); break;
+    }
     if (j.status === 'error') { toast(j.error || 'Ingestion failed', true); break; }
     await new Promise(r => setTimeout(r, 2500));
   }
@@ -1613,7 +1752,7 @@ async function loadTelemetry() {
 }
 
 /* ───────────── Boot ───────────── */
-renderLimits(); renderFiles();
+renderLimits(); renderFiles(); renderRecent();
 heroDemo(); loadStatus(); loadBenchmarks(); loadTelemetry();
 setInterval(() => { if (!document.hidden) loadTelemetry(); }, 15000);
 setInterval(() => { if (!document.hidden && !state.job) loadStatus(); }, 30000);

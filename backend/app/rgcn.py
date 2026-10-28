@@ -42,7 +42,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import networkx as nx
 
-from . import config
+from . import config, workspace
 
 try:
     import torch
@@ -52,9 +52,8 @@ try:
 except ImportError:
     TORCH_AVAILABLE = False
 
-EMBEDDINGS_PATH = config.GRAPH_STATE_DIR / "rgcn_embeddings.npy"
-NODES_PATH = config.GRAPH_STATE_DIR / "rgcn_nodes.json"
-METRICS_PATH = config.GRAPH_STATE_DIR / "rgcn_metrics.json"
+def _path(name):
+    return workspace.state_dir() / name
 
 EMBED_DIM = 48
 NUM_LAYERS = 2
@@ -263,9 +262,8 @@ def train_and_save(graph: nx.MultiDiGraph) -> Optional[dict]:
             val_auc = _rank_auc(val_pos, val_neg)
         final_embeddings = x.numpy()
 
-    config.GRAPH_STATE_DIR.mkdir(parents=True, exist_ok=True)
-    np.save(EMBEDDINGS_PATH, final_embeddings)
-    with open(NODES_PATH, "w") as f:
+    np.save(_path("rgcn_embeddings.npy"), final_embeddings)
+    with open(_path("rgcn_nodes.json"), "w") as f:
         json.dump(nodes, f)
 
     metrics = {
@@ -274,18 +272,18 @@ def train_and_save(graph: nx.MultiDiGraph) -> Optional[dict]:
         "used_semantic_init": semantic_features is not None,
         "num_val_edges": len(val_triples),
     }
-    with open(METRICS_PATH, "w") as f:
+    with open(_path("rgcn_metrics.json"), "w") as f:
         json.dump(metrics, f)
 
     return metrics
 
 
 def load_embeddings() -> Optional[Tuple[List[str], np.ndarray]]:
-    if not EMBEDDINGS_PATH.exists() or not NODES_PATH.exists():
+    if not _path("rgcn_embeddings.npy").exists() or not _path("rgcn_nodes.json").exists():
         return None
     try:
-        embeddings = np.load(EMBEDDINGS_PATH)
-        with open(NODES_PATH) as f:
+        embeddings = np.load(_path("rgcn_embeddings.npy"))
+        with open(_path("rgcn_nodes.json")) as f:
             nodes = json.load(f)
         if len(nodes) != embeddings.shape[0]:
             return None
@@ -295,10 +293,10 @@ def load_embeddings() -> Optional[Tuple[List[str], np.ndarray]]:
 
 
 def load_metrics() -> Optional[dict]:
-    if not METRICS_PATH.exists():
+    if not _path("rgcn_metrics.json").exists():
         return None
     try:
-        with open(METRICS_PATH) as f:
+        with open(_path("rgcn_metrics.json")) as f:
             return json.load(f)
     except Exception:
         return None

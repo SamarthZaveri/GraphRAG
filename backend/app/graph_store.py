@@ -30,12 +30,11 @@ from typing import Dict, List, Optional
 import networkx as nx
 import numpy as np
 
-from . import config
+from . import config, workspace
 from .models import ExtractionResult, Triple
 
-GRAPH_PATH = config.GRAPH_STATE_DIR / "graph.gpickle"
-CHUNKS_PATH = config.GRAPH_STATE_DIR / "chunks.json"
-META_PATH = config.GRAPH_STATE_DIR / "meta.json"
+def _path(name):
+    return workspace.state_dir() / name
 
 STRING_MERGE_THRESHOLD = 0.92
 EMBED_AUTO_MERGE_THRESHOLD = 0.93
@@ -221,12 +220,11 @@ class GraphStore:
         }
 
     def save(self):
-        config.GRAPH_STATE_DIR.mkdir(parents=True, exist_ok=True)
-        with open(GRAPH_PATH, "wb") as f:
+        with open(_path("graph.gpickle"), "wb") as f:
             pickle.dump(self.graph, f)
-        with open(CHUNKS_PATH, "w") as f:
+        with open(_path("chunks.json"), "w") as f:
             json.dump(self.chunks, f)
-        with open(META_PATH, "w") as f:
+        with open(_path("meta.json"), "w") as f:
             json.dump({
                 "canonical_names": self.resolver.canonical_names,
                 "canonical_types": self.resolver.canonical_types,
@@ -236,17 +234,17 @@ class GraphStore:
 
     @classmethod
     def load(cls) -> Optional["GraphStore"]:
-        if not GRAPH_PATH.exists():
+        if not _path("graph.gpickle").exists():
             return None
-        with open(GRAPH_PATH, "rb") as f:
+        with open(_path("graph.gpickle"), "rb") as f:
             graph = pickle.load(f)
         chunks = {}
-        if CHUNKS_PATH.exists():
-            with open(CHUNKS_PATH) as f:
+        if _path("chunks.json").exists():
+            with open(_path("chunks.json")) as f:
                 chunks = json.load(f)
         resolver = EntityResolver()
-        if META_PATH.exists():
-            with open(META_PATH) as f:
+        if _path("meta.json").exists():
+            with open(_path("meta.json")) as f:
                 meta = json.load(f)
             resolver.canonical_names = meta.get("canonical_names", [])
             resolver.canonical_types = meta.get("canonical_types", {})
@@ -256,18 +254,17 @@ class GraphStore:
         return cls(graph=graph, chunks=chunks, resolver=resolver)
 
 
-_store: Optional[GraphStore] = None
+_stores: dict = {}  # one cached store per workspace (None = shared corpus)
 
 
 def get_store(fresh: bool = False) -> GraphStore:
-    global _store
-    if fresh or _store is None:
+    ws = workspace.current()
+    if fresh or ws not in _stores:
         loaded = None if fresh else GraphStore.load()
-        _store = loaded if loaded is not None else GraphStore()
-    return _store
+        _stores[ws] = loaded if loaded is not None else GraphStore()
+    return _stores[ws]
 
 
 def reset_store():
-    global _store
-    _store = GraphStore()
-    return _store
+    store = _stores[workspace.current()] = GraphStore()
+    return store

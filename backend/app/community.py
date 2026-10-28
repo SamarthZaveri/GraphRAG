@@ -24,6 +24,7 @@ import networkx as nx
 
 from . import config
 from .graph_store import GraphStore
+from . import workspace
 from .models import CommunitySummary
 from .llm_client import chat_json
 
@@ -190,30 +191,34 @@ def build_root_summary(leaf_summaries: List[CommunitySummary]) -> CommunitySumma
     )
 
 
-SUMMARIES_PATH = config.GRAPH_STATE_DIR / "community_summaries.json"
-MODULARITY_PATH = config.GRAPH_STATE_DIR / "community_modularity.json"
+def _summaries_path():
+    return workspace.state_dir() / "community_summaries.json"
+
+
+def _modularity_path():
+    return workspace.state_dir() / "community_modularity.json"
 
 
 def _save_modularity(modularity: float, num_communities: int):
-    with open(MODULARITY_PATH, "w") as f:
+    with open(_modularity_path(), "w") as f:
         json.dump({"modularity": modularity, "num_communities": num_communities}, f)
 
 
 def load_modularity() -> dict:
-    if not MODULARITY_PATH.exists():
+    if not _modularity_path().exists():
         return {"modularity": None, "num_communities": None}
-    with open(MODULARITY_PATH) as f:
+    with open(_modularity_path()) as f:
         return json.load(f)
 
 
 def save_summaries(summaries: List[CommunitySummary]):
-    with open(SUMMARIES_PATH, "w") as f:
+    with open(_summaries_path(), "w") as f:
         json.dump([s.model_dump() for s in summaries], f)
 
 
 def load_summaries() -> List[CommunitySummary]:
-    if not SUMMARIES_PATH.exists():
+    if not _summaries_path().exists():
         return []
-    with open(SUMMARIES_PATH) as f:
+    with open(_summaries_path()) as f:
         data = json.load(f)
     return [CommunitySummary(**d) for d in data]

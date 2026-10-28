@@ -5,14 +5,19 @@ question category. When no compatible policy exists, routing uses the corpus
 recommendation. Benchmark comparisons always evaluate all three engines."""
 from __future__ import annotations
 import json
+import re
 import traceback
 from typing import Optional, Tuple
 
-from . import config, community, rgcn, router_features, query_engine
+from . import config, community, rgcn, router_features, query_engine, workspace
 from .graph_store import GraphStore
 from .query_bandit import LinUCBBandit
 
-ANALYSIS_PATH = config.GRAPH_STATE_DIR / "corpus_analysis.json"
+def _analysis_path():
+    return workspace.state_dir() / "corpus_analysis.json"
+
+
+# The router policy is a trained model shared by every corpus, so it stays in the shared state dir.
 QUERY_BANDIT_PATH = config.GRAPH_STATE_DIR / "query_bandit.json"
 
 MIN_SHARED_ENTITIES = 1
@@ -81,15 +86,14 @@ def analyze_corpus() -> dict:
 
 
 def _save(analysis: dict):
-    config.GRAPH_STATE_DIR.mkdir(parents=True, exist_ok=True)
-    with open(ANALYSIS_PATH, "w") as f:
+    with open(_analysis_path(), "w") as f:
         json.dump(analysis, f)
 
 
 def load_analysis() -> Optional[dict]:
-    if not ANALYSIS_PATH.exists():
+    if not _analysis_path().exists():
         return None
-    with open(ANALYSIS_PATH) as f:
+    with open(_analysis_path()) as f:
         return json.load(f)
 
 
@@ -99,11 +103,20 @@ def _fallback_to_corpus_analysis(prefix: str) -> dict:
             "reason": f"[{prefix}] {analysis.get('reason', '')}", "source": "corpus_fallback"}
 
 
+def canonical_model(name) -> str:
+    """One identity for the same weights across providers: Ollama "qwen2.5:14b" and
+    Hugging Face "Qwen/Qwen2.5-14B-Instruct" both become "qwen2.5-14b"."""
+    name = str(name or "").lower().rsplit("/", 1)[-1].replace(":", "-")
+    return re.sub(r"-(instruct|chat|it)$", "", name)
+
+
 def _policy_matches_config(bandit: LinUCBBandit) -> bool:
-    return (bandit.metadata.get("retrieval_version") == config.RETRIEVAL_VERSION
-            and bandit.metadata.get("answer_model") == config.ANSWER_MODEL
-            and bandit.metadata.get("extraction_model") == config.EXTRACTION_MODEL
-            and bandit.metadata.get("llm_backend") == config.LLM_BACKEND)
+    """The policy's rewards were earned by a specific retrieval pipeline and model, so serving must
+    use the same ones. The transport (local Ollama vs a hosted API) may differ: same model family."""
+    meta = bandit.metadata
+    return (meta.get("retrieval_version") == config.RETRIEVAL_VERSION
+            and canonical_model(meta.get("answer_model")) == canonical_model(config.ANSWER_MODEL)
+            and canonical_model(meta.get("extraction_model")) == canonical_model(config.EXTRACTION_MODEL))
 
 
 def policy_status() -> dict:
@@ -114,7 +127,9 @@ def policy_status() -> dict:
         bandit = LinUCBBandit.load(QUERY_BANDIT_PATH)
     except (OSError, ValueError, KeyError):
         return {"deployed": True, "compatible": False}
-    return {"deployed": True, "compatible": _policy_matches_config(bandit), "arms": bandit.arms,
+    exact = (bandit.metadata.get("answer_model") == config.ANSWER_MODEL
+             and bandit.metadata.get("llm_backend") == config.LLM_BACKEND)
+    return {"deployed": True, "compatible": _policy_matches_config(bandit), "exact_match": exact, "arms": bandit.arms,
             "metadata": {k: bandit.metadata.get(k) for k in ("dataset", "split", "answer_model", "retrieval_version")}}
 
 
