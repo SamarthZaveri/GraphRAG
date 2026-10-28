@@ -1,705 +1,1622 @@
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Ledger — GraphRAG for Financial Reports</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ledger · Adaptive RAG Router</title>
+<meta name="description" content="Three retrieval engines and a learned contextual-bandit router that picks one per question — with live latency, token, cost and benchmark telemetry.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600;8..60,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
-<script src="https://unpkg.com/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Gloock&family=Martian+Mono:wght@300;400;500&family=Schibsted+Grotesk:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230a0c12'/%3E%3Cpath d='M7 16h7M14 16c5 0 6-7 11-7M14 16h11M14 16c5 0 6 7 11 7' stroke='%233d6bff' stroke-width='2.4' fill='none' stroke-linecap='round'/%3E%3Ccircle cx='14' cy='16' r='3' fill='%23eda100'/%3E%3C/svg%3E">
 <style>
+/* ───────────── Tokens ───────────── */
 :root {
-  --ink: #10131a; --ink-2: #151a23; --panel: #1a2029; --panel-2: #212836;
-  --border: #2b3244; --border-soft: #212836;
-  --text: #e8e4d8; --text-dim: #a3aab8; --text-faint: #6b7387;
-  --brass: #c99c4a; --brass-dim: #6e5527; --brass-soft: #2c2517;
-  --rose: #c97363; --rose-dim: #6b352d;
-  --graph: #4a9c82; --graph-dim: #2c5c4c;
-  --vector: #6d93c9; --vector-dim: #35455e;
-  --shadow: 0 8px 24px rgba(0,0,0,.28);
-  --serif: "Source Serif 4", Georgia, serif;
-  --sans: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, sans-serif;
-  --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace;
-  color-scheme: dark;
-}
-:root[data-theme="light"] {
-  --ink: #faf8f2; --ink-2: #f2ede0; --panel: #ffffff; --panel-2: #f5f1e6;
-  --border: #ddd6c4; --border-soft: #e8e2d2;
-  --text: #23262c; --text-dim: #5b6270; --text-faint: #83806f;
-  --brass: #96702c; --brass-dim: #ecdfc0; --brass-soft: #f6efdc;
-  --rose: #a8493a; --rose-dim: #f6ddd7;
-  --graph: #2f7d68; --graph-dim: #d7ece5;
-  --vector: #3f66a0; --vector-dim: #dde6f2;
-  --shadow: 0 6px 18px rgba(90,80,50,.10);
   color-scheme: light;
+  --bg: #f3ecdc;
+  --bg-deep: #ebe2cc;
+  --surface: rgba(251, 247, 236, 0.86);
+  --surface-solid: #fbf7ec;
+  --surface-2: #f1e9d6;
+  --line: rgba(19, 35, 86, 0.14);
+  --line-strong: rgba(19, 35, 86, 0.28);
+  --ink: #0e1a3e;
+  --ink-2: #3a4668;
+  --ink-3: #69708c;
+  --accent: #1a2f86;
+  --accent-bright: #2443b8;
+  --accent-ink: #1a2f86;
+  --accent-soft: rgba(26, 47, 134, 0.09);
+  --on-accent: #fbf7ec;
+  --rule: rgba(19, 35, 86, 0.07);
+  --glow: rgba(36, 67, 184, 0.10);
+  --s-graph: #eb6834;
+  --s-vector: #1baf7a;
+  --s-hybrid: #2a78d6;
+  --s-router: #eda100;
+  --s-neutral: #9a9a8f;
+  --good: #1e7a4a;
+  --warn: #a5650a;
+  --bad: #b3261e;
+  --shadow: 0 1px 0 rgba(255,255,255,.6) inset, 0 18px 40px -24px rgba(14, 26, 62, .35);
+  --radius: 18px;
+  --f-display: "Gloock", "Iowan Old Style", Georgia, serif;
+  --f-ui: "Schibsted Grotesk", "Helvetica Neue", sans-serif;
+  --f-mono: "Martian Mono", ui-monospace, "SFMono-Regular", monospace;
 }
-* { box-sizing: border-box; }
-html, body { height: 100%; margin: 0; }
-body { background: var(--ink); color: var(--text); font-family: var(--sans); font-size: 15px; line-height: 1.55; -webkit-font-smoothing: antialiased; transition: background .2s ease, color .2s ease; }
-h1, h2, h3, h4 { font-family: var(--serif); font-weight: 600; margin: 0; color: var(--text); }
-p { margin: 0 0 0.75em; }
-a { color: var(--brass); }
-button { font-family: var(--sans); cursor: pointer; }
-textarea, select, input { font-family: var(--sans); }
-::-webkit-scrollbar { width: 10px; height: 10px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--border); border-radius: 6px; }
-:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
-.mono { font-family: var(--mono); }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #040507;
+    --bg-deep: #000;
+    --surface: rgba(12, 15, 24, 0.78);
+    --surface-solid: #0b0e16;
+    --surface-2: #10141f;
+    --line: rgba(110, 140, 255, 0.13);
+    --line-strong: rgba(110, 140, 255, 0.28);
+    --ink: #eef1fa;
+    --ink-2: #a9b0c8;
+    --ink-3: #6d7593;
+    --accent: #3d6bff;
+    --accent-bright: #5a82ff;
+    --accent-ink: #9fb5ff;
+    --accent-soft: rgba(61, 107, 255, 0.13);
+    --on-accent: #fff;
+    --rule: rgba(110, 140, 255, 0.05);
+    --glow: rgba(61, 107, 255, 0.22);
+    --s-graph: #d95926;
+    --s-vector: #199e70;
+    --s-hybrid: #3987e5;
+    --s-router: #c98500;
+    --s-neutral: #6f6f68;
+    --good: #4cc38a;
+    --warn: #e0a43a;
+    --bad: #ff6b61;
+    --shadow: 0 1px 0 rgba(255,255,255,.04) inset, 0 24px 60px -30px rgba(0, 0, 0, .9);
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #040507;
+  --bg-deep: #000;
+  --surface: rgba(12, 15, 24, 0.78);
+  --surface-solid: #0b0e16;
+  --surface-2: #10141f;
+  --line: rgba(110, 140, 255, 0.13);
+  --line-strong: rgba(110, 140, 255, 0.28);
+  --ink: #eef1fa;
+  --ink-2: #a9b0c8;
+  --ink-3: #6d7593;
+  --accent: #3d6bff;
+  --accent-bright: #5a82ff;
+  --accent-ink: #9fb5ff;
+  --accent-soft: rgba(61, 107, 255, 0.13);
+  --on-accent: #fff;
+  --rule: rgba(110, 140, 255, 0.05);
+  --glow: rgba(61, 107, 255, 0.22);
+  --s-graph: #d95926;
+  --s-vector: #199e70;
+  --s-hybrid: #3987e5;
+  --s-router: #c98500;
+  --s-neutral: #6f6f68;
+  --good: #4cc38a;
+  --warn: #e0a43a;
+  --bad: #ff6b61;
+  --shadow: 0 1px 0 rgba(255,255,255,.04) inset, 0 24px 60px -30px rgba(0, 0, 0, .9);
+}
 
-.pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 3px; font-size: 12.5px; font-family: var(--mono); border: 1px solid var(--border); color: var(--text-dim); background: var(--panel-2); }
-.pill.doc { color: var(--brass); border-color: var(--brass-dim); }
-.pill.emerald { color: var(--graph); border-color: var(--graph-dim); }
-.pill.vector { color: var(--vector); border-color: var(--vector-dim); }
+/* ───────────── Base & atmosphere ───────────── */
+*, *::before, *::after { box-sizing: border-box; }
+html { scroll-behavior: smooth; scroll-padding-top: 84px; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 400 15px/1.55 var(--f-ui);
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+  min-height: 100vh;
+}
+/* Ledger paper: ruled lines + a column grid, fading out from a cobalt glow. */
+body::before {
+  content: "";
+  position: fixed; inset: 0;
+  z-index: -2;
+  background:
+    radial-gradient(60rem 40rem at 12% -8%, var(--glow), transparent 60%),
+    radial-gradient(50rem 36rem at 105% 30%, var(--glow), transparent 65%),
+    repeating-linear-gradient(0deg, var(--rule) 0 1px, transparent 1px 32px),
+    repeating-linear-gradient(90deg, var(--rule) 0 1px, transparent 1px 128px),
+    var(--bg);
+}
+body::after {
+  content: "";
+  position: fixed; inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  opacity: .5;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .5 0 0 0 0 .5 0 0 0 0 .5 0 0 0 .35 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+::selection { background: var(--accent); color: var(--on-accent); }
+a { color: var(--accent-ink); }
+button, input, textarea, select { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--accent-bright); outline-offset: 3px; border-radius: 6px; }
+.mono { font-family: var(--f-mono); font-feature-settings: "zero"; letter-spacing: -0.01em; }
+.wrap { width: min(1240px, 100% - 32px); margin-inline: auto; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
-.btn { border: 1px solid var(--border); background: var(--panel-2); color: var(--text); padding: 9px 16px; border-radius: 5px; font-size: 14px; font-weight: 500; transition: border-color .15s, background .15s; }
-.btn:hover:not(:disabled) { border-color: var(--brass); background: var(--panel); }
-.btn:disabled { opacity: .45; cursor: not-allowed; }
-.btn.primary { background: var(--brass); border-color: var(--brass); color: var(--ink); font-weight: 600; }
-.btn.primary:hover:not(:disabled) { filter: brightness(1.08); }
-.btn.small { padding: 5px 10px; font-size: 12.5px; }
+/* ───────────── Header ───────────── */
+.top {
+  position: sticky; top: 0; z-index: 50;
+  backdrop-filter: blur(14px) saturate(1.3);
+  -webkit-backdrop-filter: blur(14px) saturate(1.3);
+  background: color-mix(in srgb, var(--bg) 72%, transparent);
+  border-bottom: 1px solid var(--line);
+}
+.top .wrap { display: flex; align-items: center; gap: 20px; height: 64px; }
+.brand { display: flex; align-items: center; gap: 10px; text-decoration: none; color: var(--ink); }
+.brand svg { width: 30px; height: 30px; }
+.brand b { font: 400 24px/1 var(--f-display); letter-spacing: .01em; }
+.brand small { font: 500 10px/1 var(--f-mono); color: var(--ink-3); letter-spacing: .08em; text-transform: uppercase; border: 1px solid var(--line-strong); padding: 4px 6px; border-radius: 5px; }
+.nav { display: flex; gap: 4px; margin-left: 12px; }
+.nav a {
+  color: var(--ink-2); text-decoration: none; font-weight: 500; font-size: 14px;
+  padding: 7px 12px; border-radius: 999px; transition: background .2s, color .2s;
+}
+.nav a:hover, .nav a.on { color: var(--ink); background: var(--accent-soft); }
+.top-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+.pill {
+  display: inline-flex; align-items: center; gap: 8px;
+  font: 400 11px/1 var(--f-mono); color: var(--ink-2);
+  border: 1px solid var(--line); background: var(--surface); padding: 7px 10px; border-radius: 999px;
+  white-space: nowrap;
+}
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ink-3); flex: none; }
+.dot.ok { background: var(--good); box-shadow: 0 0 0 3px color-mix(in srgb, var(--good) 22%, transparent); }
+.dot.bad { background: var(--bad); box-shadow: 0 0 0 3px color-mix(in srgb, var(--bad) 22%, transparent); }
+.dot.warn { background: var(--warn); }
+.icon-btn {
+  width: 38px; height: 38px; display: grid; place-items: center; border-radius: 11px;
+  border: 1px solid var(--line); background: var(--surface); cursor: pointer; transition: border-color .2s, transform .2s;
+}
+.icon-btn:hover { border-color: var(--line-strong); transform: translateY(-1px); }
+.icon-btn svg { width: 18px; height: 18px; }
+.theme-sun { display: none; }
+:root[data-theme="dark"] .theme-sun { display: block; }
+:root[data-theme="dark"] .theme-moon { display: none; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .theme-sun { display: block; }
+  :root:not([data-theme="light"]) .theme-moon { display: none; }
+}
 
-.theme-toggle { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel); color: var(--text-dim); flex-shrink: 0; }
-.theme-toggle:hover { border-color: var(--brass); color: var(--text); }
-.theme-toggle svg { width: 16px; height: 16px; }
+/* ───────────── Hero ───────────── */
+.hero { padding: 72px 0 40px; }
+.hero .wrap { display: grid; grid-template-columns: 1.05fr 1fr; gap: 48px; align-items: center; }
+.eyebrow {
+  display: inline-flex; align-items: center; gap: 10px;
+  font: 400 11px/1 var(--f-mono); letter-spacing: .14em; text-transform: uppercase; color: var(--accent-ink);
+}
+.eyebrow::before { content: ""; width: 28px; height: 1px; background: currentColor; }
+h1 {
+  font: 400 clamp(44px, 6.4vw, 86px)/0.98 var(--f-display);
+  letter-spacing: -0.02em; margin: 20px 0 22px;
+}
+h1 em { font-style: italic; color: var(--accent-ink); position: relative; white-space: nowrap; }
+h1 em::after {
+  content: ""; position: absolute; left: 0; right: 0; bottom: .06em; height: .09em;
+  background: linear-gradient(90deg, var(--s-router), transparent);
+  transform-origin: left; animation: underline 1.2s .9s cubic-bezier(.2,.7,.2,1) both;
+}
+@keyframes underline { from { transform: scaleX(0); } }
+.lede { font-size: 18px; line-height: 1.6; color: var(--ink-2); max-width: 34em; margin: 0 0 30px; }
+.lede b { color: var(--ink); font-weight: 600; }
+.cta { display: flex; flex-wrap: wrap; gap: 12px; }
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 9px;
+  padding: 12px 20px; border-radius: 12px; border: 1px solid var(--line-strong);
+  background: var(--surface); color: var(--ink); font-weight: 600; font-size: 14.5px;
+  text-decoration: none; cursor: pointer; transition: transform .2s, border-color .2s, background .2s, box-shadow .2s;
+}
+.btn:hover { transform: translateY(-1px); border-color: var(--accent); }
+.btn.primary {
+  background: var(--accent); border-color: var(--accent); color: var(--on-accent);
+  box-shadow: 0 10px 30px -12px var(--accent);
+}
+.btn.primary:hover { background: var(--accent-bright); }
+.btn:disabled { opacity: .5; cursor: not-allowed; transform: none; }
+.btn svg { width: 16px; height: 16px; }
+.btn.sm { padding: 8px 12px; font-size: 13px; border-radius: 10px; }
+.kbd { font: 400 10px/1 var(--f-mono); opacity: .7; border: 1px solid currentColor; border-radius: 4px; padding: 3px 4px; }
 
-.card { background: var(--panel); border: 1px solid var(--border-soft); border-radius: 8px; padding: 18px 20px; }
+.stats { display: grid; grid-template-columns: repeat(4, 1fr); margin-top: 44px; border-top: 1px solid var(--line); }
+.stat { padding: 18px 16px 0 0; }
+.stat + .stat { padding-left: 16px; border-left: 1px solid var(--line); }
+.stat .v { font: 400 30px/1 var(--f-display); letter-spacing: -0.01em; }
+.stat .v small { font: 400 12px var(--f-mono); color: var(--ink-3); margin-left: 4px; }
+.stat .k { font-size: 12px; color: var(--ink-3); margin-top: 8px; line-height: 1.35; }
 
-.spinner { width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--brass); border-radius: 50%; animation: spin .7s linear infinite; display: inline-block; vertical-align: -2px; margin-right: 6px; }
-@keyframes spin { to { transform: rotate(360deg); } }
+.hero-visual {
+  position: relative; border-radius: 26px; padding: 22px;
+  background: linear-gradient(180deg, var(--surface), color-mix(in srgb, var(--surface) 60%, transparent));
+  border: 1px solid var(--line); box-shadow: var(--shadow);
+}
+.hero-visual::before {
+  content: ""; position: absolute; inset: -1px; border-radius: inherit; pointer-events: none;
+  background: conic-gradient(from var(--a) at 50% 50%, transparent 0 70%, var(--accent) 80%, transparent 90%);
+  -webkit-mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+  mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+  padding: 1px; opacity: .55; animation: spin 9s linear infinite;
+}
+@property --a { syntax: "<angle>"; initial-value: 0deg; inherits: false; }
+@keyframes spin { to { --a: 360deg; } }
+.hv-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 4px; }
+.hv-head > span:last-child { white-space: nowrap; }
+.hv-head span { font: 400 11px/1 var(--f-mono); color: var(--ink-3); letter-spacing: .06em; text-transform: uppercase; }
+.hv-q {
+  font: 400 italic 15px/1.4 var(--f-ui); color: var(--ink-2); min-height: 2.8em; margin: 10px 0 6px;
+  border-left: 2px solid var(--s-router); padding-left: 12px;
+}
 
-/* layout */
-.shell { display: grid; grid-template-columns: 300px 1fr; height: 100vh; }
-.sidebar { background: var(--ink-2); border-right: 1px solid var(--border-soft); padding: 24px 22px; display: flex; flex-direction: column; overflow-y: auto; }
-.brand { display: flex; align-items: center; gap: 12px; margin-bottom: 26px; }
-.brand-mark { width: 38px; height: 38px; border-radius: 6px; background: linear-gradient(155deg, var(--brass) 0%, var(--brass-dim) 100%); color: var(--ink); font-family: var(--serif); font-weight: 700; font-size: 20px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
-.brand-text { flex: 1; min-width: 0; }
-.brand h1 { font-size: 21px; letter-spacing: .2px; }
-.tagline { color: var(--text-faint); font-size: 12.5px; margin: 2px 0 0; }
-.tabs { display: flex; flex-direction: column; gap: 3px; margin-bottom: 26px; }
-.tab-btn { text-align: left; background: transparent; border: none; color: var(--text-dim); font-size: 14.5px; padding: 9px 12px; border-radius: 6px; border-left: 2px solid transparent; }
-.tab-btn:hover { background: var(--panel); color: var(--text); }
-.tab-btn.active { background: var(--panel); color: var(--text); border-left: 2px solid var(--brass); font-weight: 500; }
-.sidebar-section { padding-top: 18px; border-top: 1px solid var(--border-soft); }
-.sidebar-heading { font-size: 12px; color: var(--text-faint); font-weight: 500; margin-bottom: 10px; letter-spacing: .3px; }
-.dim-text { color: var(--text-dim); font-size: 13.5px; }
-.dim-text.small { font-size: 12.5px; margin-top: 10px; }
-.warn-text { color: var(--brass); font-size: 12.5px; margin-bottom: 10px; line-height: 1.5; }
-.error-text { color: var(--rose); font-size: 12.5px; margin-top: 8px; }
-.stat-grid { display: flex; gap: 14px; margin-bottom: 12px; }
-.stat { display: flex; flex-direction: column; }
-.stat-num { font-family: var(--serif); font-size: 22px; font-weight: 600; color: var(--brass); }
-.stat-label { font-size: 11.5px; color: var(--text-faint); }
-.doc-pills { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
-.upload-label { display: block; margin-top: 6px; cursor: pointer; }
-.link-btn { color: var(--text-faint); font-size: 12.5px; text-decoration: underline; text-decoration-color: var(--border); text-underline-offset: 3px; }
-.link-btn:hover { color: var(--brass); }
-.dropzone { margin-top: 10px; border: 1.5px dashed var(--border); border-radius: 8px; padding: 16px 12px; text-align: center; color: var(--text-faint); font-size: 12.5px; transition: border-color .15s, background .15s, color .15s; cursor: pointer; }
-.dropzone:hover, .dropzone.dragover { border-color: var(--brass); color: var(--text-dim); background: var(--panel); }
-.dropzone.dragover { background: var(--brass-soft); border-style: solid; }
-.dropzone .dz-icon { font-size: 20px; display: block; margin-bottom: 4px; }
-.mode-toggle { display: flex; gap: 6px; margin-top: 10px; font-size: 12px; }
-.mode-toggle label { display: flex; align-items: center; gap: 5px; color: var(--text-dim); cursor: pointer; }
-.rgcn-badge { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--text-faint); margin-top: 8px; }
-.rgcn-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--border); flex-shrink: 0; }
-.rgcn-dot.on { background: var(--graph); }
-.sidebar-footer { margin-top: auto; padding-top: 22px; color: var(--text-faint); font-size: 12px; line-height: 1.6; }
-.main { overflow-y: auto; padding: 30px 40px; }
-.empty-state { display: flex; flex-direction: column; align-items: flex-start; justify-content: center; height: 60vh; max-width: 480px; color: var(--text-dim); }
-.empty-state h2 { margin-bottom: 10px; }
-.panel-header { margin-bottom: 22px; }
-.panel-header h2 { font-size: 24px; margin-bottom: 6px; }
-.panel-header p { color: var(--text-dim); font-size: 14px; }
-.hidden { display: none !important; }
+/* ───────────── Route diagram ───────────── */
+.hv-out { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; min-height: 30px; margin-top: 6px; font: 400 11px/1.4 var(--f-mono); color: var(--ink-2); animation: rise .5s both; }
+.hv-out b { color: var(--ink); font-weight: 500; }
+.hv-out:empty { animation: none; }
 
-/* graph -- kept dark deliberately in both themes, like a map/code-editor
-   viewport: node colors are tuned for a dark canvas and stay legible that
-   way regardless of the surrounding page theme */
-#graph-canvas { width: 100%; height: 62vh; background: #12161d; border: 1px solid var(--border-soft); border-radius: 8px; }
-.legend { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
-.legend-item { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-dim); }
-.legend-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
-.node-detail { margin-top: 16px; }
+.how { padding: 8px 0 24px; }
+.how-steps { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); position: relative; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.how-steps li { padding: 26px 22px 24px; position: relative; }
+.how-steps li + li { border-left: 1px solid var(--line); }
+.how-steps li:nth-child(2) { transition-delay: .08s; } .how-steps li:nth-child(3) { transition-delay: .16s; } .how-steps li:nth-child(4) { transition-delay: .24s; }
+.how-steps li::after { content: ""; position: absolute; left: 22px; right: 22px; top: -1px; height: 2px; background: linear-gradient(90deg, var(--accent), var(--s-router)); transform: scaleX(0); transform-origin: left; transition: transform .9s cubic-bezier(.2,.7,.2,1); }
+.how-steps li.in::after { transform: scaleX(1); }
+.how-steps li:nth-child(2).in::after { transition-delay: .25s; } .how-steps li:nth-child(3).in::after { transition-delay: .5s; } .how-steps li:nth-child(4).in::after { transition-delay: .75s; }
+.how-n { font-size: 11px; color: var(--accent-ink); }
+.how h3 { font: 400 26px/1.1 var(--f-display); margin: 10px 0 8px; }
+.how p { margin: 0 0 14px; color: var(--ink-2); font-size: 14px; line-height: 1.55; }
+.how p b { color: var(--ink); font-weight: 600; }
+.how-io { font-size: 10.5px; color: var(--ink-3); border: 1px solid var(--line); border-radius: 6px; padding: 4px 7px; display: inline-block; }
+.route { width: 100%; height: auto; display: block; overflow: visible; }
+.route .wire { fill: none; stroke: var(--line-strong); stroke-width: 1.5; }
+.route .flow { fill: none; stroke-width: 2; stroke-dasharray: 2 10; stroke-linecap: round; opacity: .0; transition: opacity .4s; }
+.route .branch.on .flow { opacity: 1; animation: flow .9s linear infinite; }
+.route .branch.on .wire { stroke-width: 2.5; }
+.route .branch.dim { opacity: .38; }
+.route .branch { transition: opacity .5s; }
+@keyframes flow { to { stroke-dashoffset: -24; } }
+.route .node-box { fill: var(--surface-solid); stroke: var(--line-strong); stroke-width: 1; transition: stroke .3s, fill .3s; }
+.route .branch.on .node-box { stroke-width: 2; }
+.route text { font-family: var(--f-ui); fill: var(--ink); }
+.route .lbl { font-size: 14px; font-weight: 600; }
+.route .sub { font-family: var(--f-mono); font-size: 10px; fill: var(--ink-3); }
+.route .val { font-family: var(--f-mono); font-size: 11px; fill: var(--ink-2); }
+.route .router-ring { fill: none; stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 4 6; transform-origin: center; transform-box: fill-box; animation: rot 12s linear infinite; }
+.route.busy .router-ring { animation-duration: 1.6s; stroke: var(--s-router); }
+.route .router-core { fill: var(--accent); }
+.route.busy .router-core { animation: pulse 1s ease-in-out infinite; transform-origin: center; transform-box: fill-box; }
+@keyframes rot { to { transform: rotate(360deg); } }
+@keyframes pulse { 50% { transform: scale(.82); opacity: .7; } }
+.route .q-wire { fill: none; stroke: var(--accent); stroke-width: 2; stroke-dasharray: 2 8; stroke-linecap: round; animation: flow 1.2s linear infinite; }
 
-/* query */
-.ask-form { display: flex; gap: 10px; margin-bottom: 10px; }
-.ask-form textarea { flex: 1; background: var(--panel); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 11px 13px; font-size: 14.5px; resize: vertical; min-height: 46px; }
-.ask-controls { display: flex; align-items: center; gap: 16px; margin-bottom: 14px; font-size: 13px; color: var(--text-dim); flex-wrap: wrap; }
-.ask-controls select { background: var(--panel); border: 1px solid var(--border); color: var(--text); border-radius: 5px; padding: 5px 8px; }
-.compare-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 18px; }
-.answer-col h3 { font-size: 15px; margin-bottom: 4px; }
-.answer-col .mode-badge { font-size: 11.5px; margin-bottom: 12px; }
-.answer-body { white-space: pre-wrap; font-size: 14.5px; line-height: 1.6; margin-bottom: 14px; }
-.citation { border-left: 2px solid var(--border); padding: 6px 10px; margin-bottom: 6px; font-size: 12px; color: var(--text-dim); }
-.citation .doc { color: var(--brass); font-family: var(--mono); }
-.engine-reason { border-left: 2px solid var(--brass-dim); background: var(--panel-2); padding: 7px 10px; margin: -4px 0 12px; font-size: 12.5px; color: var(--text-dim); border-radius: 0 4px 4px 0; }
-.sample-qs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 22px; }
-.sample-q { font-size: 12.5px; padding: 5px 11px; border: 1px solid var(--border); border-radius: 20px; color: var(--text-dim); background: var(--panel); }
-.sample-q:hover { border-color: var(--brass); color: var(--text); }
+/* ───────────── Sections ───────────── */
+section.block { padding: 64px 0; }
+.sec-head { display: flex; align-items: end; justify-content: space-between; gap: 24px; margin-bottom: 26px; flex-wrap: wrap; }
+.sec-head h2 { font: 400 clamp(32px, 4vw, 48px)/1.02 var(--f-display); margin: 10px 0 0; letter-spacing: -0.015em; }
+.sec-head p { margin: 10px 0 0; color: var(--ink-2); max-width: 46em; }
+.num { font: 400 11px/1 var(--f-mono); color: var(--ink-3); letter-spacing: .1em; }
+.card {
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+  box-shadow: var(--shadow); padding: 22px; position: relative;
+  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+}
+.card-title { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 16px; }
+.card-title h3 { margin: 0; font: 600 13px/1.2 var(--f-ui); letter-spacing: .06em; text-transform: uppercase; color: var(--ink-2); }
+.card-title .hint { font: 400 11px/1.3 var(--f-mono); color: var(--ink-3); }
+.empty { color: var(--ink-3); font-size: 14px; padding: 28px 8px; text-align: center; }
+.muted { color: var(--ink-3); }
 
-/* communities */
-.community-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; }
-.community-card h3 { font-size: 16px; margin-bottom: 8px; }
-.community-card p { font-size: 13.5px; color: var(--text-dim); }
-.community-members { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 10px; }
+/* Reveal-on-scroll (CSS-driven; JS only toggles the class). */
+.reveal { opacity: 0; transform: translateY(18px); transition: opacity .8s cubic-bezier(.2,.7,.2,1), transform .8s cubic-bezier(.2,.7,.2,1); }
+.reveal.in { opacity: 1; transform: none; }
+.rise { animation: rise .9s cubic-bezier(.2,.7,.2,1) both; }
+@keyframes rise { from { opacity: 0; transform: translateY(22px); filter: blur(6px); } }
+.d1 { animation-delay: .08s; } .d2 { animation-delay: .18s; } .d3 { animation-delay: .3s; } .d4 { animation-delay: .44s; } .d5 { animation-delay: .6s; } .d6 { animation-delay: .78s; }
 
-/* benchmark -- GraphRAG and Vector RAG each get a fixed, distinct color
-   (teal-green vs slate-blue) reserved ONLY for comparing the two systems,
-   deliberately separate from the brass UI accent so "primary action" and
-   "which system is this" never look like the same signal */
-.bench-summary { display: flex; flex-wrap: wrap; gap: 30px; margin-bottom: 24px; }
-.bench-score { text-align: center; }
-.bench-score .num { font-family: var(--serif); font-size: 40px; font-weight: 700; }
-.bench-score.graphrag .num { color: var(--graph); }
-.bench-score.vector .num { color: var(--vector); }
-.bench-score .label { font-size: 12.5px; color: var(--text-faint); margin-top: 4px; }
-.bar-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; font-size: 12.5px; }
-.bar-track { flex: 1; height: 8px; background: var(--panel-2); border-radius: 4px; overflow: hidden; }
-.bar-fill { height: 100%; }
-.bar-fill.graphrag { background: var(--graph); }
-.bar-fill.vector { background: var(--vector); }
-table.bench-table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
-table.bench-table th, table.bench-table td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border-soft); vertical-align: top; }
-table.bench-table th { color: var(--text-faint); font-weight: 500; font-size: 12px; }
-.cat-tag { font-family: var(--mono); font-size: 11px; padding: 2px 7px; border-radius: 3px; border: 1px solid var(--border); color: var(--text-dim); }
+/* ───────────── Ask ───────────── */
+.console { padding: 0; overflow: hidden; }
+.console-in { padding: 22px 22px 16px; }
+.qbox {
+  width: 100%; min-height: 96px; resize: vertical; border: 0; outline: none; background: transparent;
+  font: 400 clamp(19px, 2vw, 24px)/1.4 var(--f-display); color: var(--ink);
+}
+.qbox::placeholder { color: var(--ink-3); }
+.console-bar {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 14px 22px; border-top: 1px solid var(--line); background: color-mix(in srgb, var(--surface-2) 55%, transparent);
+}
+.seg { display: inline-flex; padding: 3px; border-radius: 12px; background: var(--surface-2); border: 1px solid var(--line); flex-wrap: wrap; }
+.seg button {
+  border: 0; background: transparent; padding: 7px 12px; border-radius: 9px; cursor: pointer;
+  font-size: 13px; font-weight: 500; color: var(--ink-2); display: inline-flex; align-items: center; gap: 7px;
+  transition: background .2s, color .2s;
+}
+.seg button[aria-pressed="true"] { background: var(--surface-solid); color: var(--ink); box-shadow: 0 1px 2px rgba(0,0,0,.12), 0 0 0 1px var(--line); }
+.swatch { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+.console-bar .btn { margin-left: auto; }
+.chips { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+.chip {
+  border: 1px solid var(--line); background: transparent; border-radius: 999px; padding: 6px 12px;
+  font-size: 12.5px; color: var(--ink-2); cursor: pointer; transition: border-color .2s, color .2s, background .2s;
+  display: inline-flex; gap: 8px; align-items: center; text-align: left;
+}
+.chip:hover { border-color: var(--accent); color: var(--ink); background: var(--accent-soft); }
+.chip i { font: normal 400 9.5px/1 var(--f-mono); color: var(--ink-3); text-transform: uppercase; letter-spacing: .06em; }
+
+.results { margin-top: 22px; display: grid; gap: 18px; }
+.res-grid { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); gap: 18px; align-items: start; }
+.side { display: grid; gap: 18px; }
+.engine-tag {
+  display: inline-flex; align-items: center; gap: 8px; font: 500 12px/1 var(--f-mono);
+  padding: 6px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface-2); color: var(--ink);
+}
+.answer-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+.answer-head .spacer { flex: 1; }
+.numeric {
+  display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+  padding: 16px 18px; border-radius: 14px; margin-bottom: 16px;
+  background: linear-gradient(120deg, var(--accent-soft), transparent);
+  border: 1px solid var(--line);
+}
+.numeric .n { font: 400 clamp(30px, 4vw, 44px)/1 var(--f-display); letter-spacing: -0.01em; }
+.numeric .u { font: 400 12px var(--f-mono); color: var(--ink-3); text-transform: uppercase; letter-spacing: .08em; }
+.answer { font-size: 15.5px; line-height: 1.7; color: var(--ink); overflow-wrap: anywhere; }
+.answer p { margin: 0 0 12px; }
+.answer ul { margin: 0 0 12px; padding-left: 20px; }
+.answer strong { font-weight: 650; }
+.doc {
+  display: inline-flex; align-items: center; gap: 5px; vertical-align: 1px;
+  font: 400 10.5px/1 var(--f-mono); padding: 4px 7px; border-radius: 6px; cursor: pointer;
+  color: var(--accent-ink); background: var(--accent-soft); border: 1px solid transparent; transition: border-color .2s;
+}
+.doc:hover { border-color: var(--accent); }
+.sources { margin-top: 18px; border-top: 1px solid var(--line); padding-top: 14px; }
+.sources summary { cursor: pointer; font: 600 12px var(--f-ui); letter-spacing: .06em; text-transform: uppercase; color: var(--ink-2); list-style: none; display: flex; align-items: center; gap: 8px; }
+.sources summary::-webkit-details-marker { display: none; }
+.sources summary::before { content: "+"; font: 400 14px var(--f-mono); color: var(--accent-ink); width: 12px; }
+.sources[open] summary::before { content: "−"; }
+.src { padding: 12px 0; border-bottom: 1px dashed var(--line); display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; }
+.src:last-child { border-bottom: 0; }
+.src.flash { animation: flash 1.4s ease; }
+@keyframes flash { 20% { background: var(--accent-soft); } }
+.src .rank { font: 400 11px var(--f-mono); color: var(--ink-3); padding-top: 2px; }
+.src .meta { font: 400 11px var(--f-mono); color: var(--ink-2); }
+.src .snip { grid-column: 2; font-size: 13px; color: var(--ink-3); line-height: 1.5; overflow-wrap: anywhere; }
+
+.reward-row { display: grid; grid-template-columns: 92px 1fr 52px; align-items: center; gap: 10px; margin: 9px 0; font-size: 13px; }
+.reward-row .bar { height: 10px; background: var(--surface-2); border-radius: 4px; overflow: hidden; }
+.reward-row .bar span { display: block; height: 100%; border-radius: 0 4px 4px 0; transform-origin: left; animation: grow .9s cubic-bezier(.2,.7,.2,1) both; }
+.reward-row .v { font: 400 11.5px var(--f-mono); text-align: right; color: var(--ink-2); }
+.reward-row.win { font-weight: 650; }
+@keyframes grow { from { transform: scaleX(0); } }
+.why { font-size: 13px; color: var(--ink-2); margin: 12px 0 0; padding: 10px 12px; border-radius: 10px; background: var(--surface-2); }
+.why b { color: var(--ink); }
+
+.big-latency { display: flex; align-items: baseline; gap: 8px; }
+.big-latency .n { font: 400 42px/1 var(--f-display); letter-spacing: -0.02em; }
+.big-latency .u { font: 400 12px var(--f-mono); color: var(--ink-3); }
+.waterfall { display: flex; height: 12px; gap: 2px; margin: 16px 0 10px; }
+.waterfall span { border-radius: 3px; min-width: 3px; transform-origin: left; animation: grow .8s cubic-bezier(.2,.7,.2,1) both; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12px; color: var(--ink-2); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.legend .mono { color: var(--ink-3); font-size: 11px; }
+.kv { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; margin-top: 16px; background: var(--line); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.kv div { background: var(--surface-solid); padding: 11px 12px; }
+.kv .k { font-size: 11px; color: var(--ink-3); }
+.kv .v { font: 400 15px/1.3 var(--f-mono); margin-top: 3px; }
+.meter { height: 6px; border-radius: 3px; background: var(--surface-2); overflow: hidden; margin-top: 6px; }
+.meter span { display: block; height: 100%; background: var(--accent); border-radius: 3px; }
+.flag { display: inline-flex; align-items: center; gap: 6px; font: 500 11px var(--f-mono); padding: 4px 8px; border-radius: 6px; border: 1px solid var(--line); }
+.flag.good { color: var(--good); } .flag.warn { color: var(--warn); } .flag.bad { color: var(--bad); }
+
+.cmp { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; }
+.cmp .card { display: flex; flex-direction: column; }
+.cmp .answer { font-size: 14.5px; max-height: 360px; overflow: auto; padding-right: 6px; }
+.cmp-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 0 0 14px; }
+.cmp-metrics div { padding: 8px 10px; border-radius: 10px; background: var(--surface-2); }
+.cmp-metrics .k { font-size: 10.5px; color: var(--ink-3); }
+.cmp-metrics .v { font: 400 13px var(--f-mono); }
+.best { font: 500 9.5px var(--f-mono); color: var(--good); text-transform: uppercase; letter-spacing: .06em; margin-left: 4px; }
+
+.loading { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); gap: 18px; }
+.skel { border-radius: 10px; height: 14px; margin: 12px 0; background: linear-gradient(90deg, var(--surface-2), var(--line), var(--surface-2)); background-size: 300% 100%; animation: shimmer 1.4s ease infinite; }
+@keyframes shimmer { to { background-position: -150% 0; } }
+.steps { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; font-size: 13.5px; }
+.steps li { display: flex; align-items: center; gap: 10px; color: var(--ink-3); transition: color .3s; }
+.steps li::before { content: ""; width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid currentColor; flex: none; }
+.steps li.now { color: var(--ink); }
+.steps li.now::before { background: var(--s-router); border-color: var(--s-router); animation: pulse 1s infinite; }
+.steps li.done { color: var(--ink-2); }
+.steps li.done::before { background: var(--accent); border-color: var(--accent); }
+.elapsed { font: 400 34px/1 var(--f-display); margin: 4px 0 16px; }
+
+/* ───────────── Ingest ───────────── */
+.ingest-grid { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); gap: 18px; align-items: start; }
+.drop {
+  position: relative; border-radius: 16px; padding: 40px 24px; text-align: center; cursor: pointer;
+  border: 1.5px dashed var(--line-strong); background:
+    radial-gradient(30rem 12rem at 50% 0%, var(--accent-soft), transparent 70%);
+  transition: border-color .25s, background-color .25s, transform .25s;
+}
+.drop:hover, .drop.over { border-color: var(--accent); }
+.drop.over { transform: scale(1.01); background-color: var(--accent-soft); }
+.drop svg { width: 46px; height: 46px; color: var(--accent-ink); margin-bottom: 12px; }
+.drop.over svg { animation: bob 0.9s ease-in-out infinite; }
+@keyframes bob { 50% { transform: translateY(-6px); } }
+.drop h4 { margin: 0 0 6px; font: 400 24px/1.2 var(--f-display); }
+.drop p { margin: 0; color: var(--ink-3); font-size: 13px; }
+.drop .limits { display: inline-flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; justify-content: center; }
+.drop .limits span { font: 400 10.5px var(--f-mono); border: 1px solid var(--line); border-radius: 999px; padding: 5px 9px; color: var(--ink-2); background: var(--surface); }
+.files { list-style: none; margin: 16px 0 0; padding: 0; display: grid; gap: 8px; }
+.file {
+  display: grid; grid-template-columns: 34px 1fr auto auto; align-items: center; gap: 12px;
+  padding: 10px 12px; border-radius: 12px; border: 1px solid var(--line); background: var(--surface-solid);
+  animation: rise .4s cubic-bezier(.2,.7,.2,1) both;
+}
+.file.bad { border-color: color-mix(in srgb, var(--bad) 50%, transparent); }
+.ext { font: 500 9.5px var(--f-mono); text-transform: uppercase; width: 34px; height: 40px; display: grid; place-items: center; border-radius: 6px; background: var(--accent-soft); color: var(--accent-ink); border: 1px solid var(--line); }
+.file .name { font-size: 13.5px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file .err { font-size: 11.5px; color: var(--bad); }
+.file .size { font: 400 11px var(--f-mono); color: var(--ink-3); }
+.file button { border: 0; background: transparent; cursor: pointer; color: var(--ink-3); padding: 6px; border-radius: 8px; }
+.file button:hover { color: var(--bad); background: var(--surface-2); }
+.ingest-actions { display: flex; align-items: center; gap: 12px; margin-top: 16px; flex-wrap: wrap; }
+.ingest-actions .btn.primary { margin-left: auto; }
+.progress { height: 8px; border-radius: 4px; background: var(--surface-2); overflow: hidden; margin: 12px 0 8px; }
+.progress span { display: block; height: 100%; background: linear-gradient(90deg, var(--accent), var(--s-router)); border-radius: 4px; transition: width .6s cubic-bezier(.2,.7,.2,1); }
+.progress.indet span { width: 30% !important; animation: indet 1.4s ease-in-out infinite; }
+@keyframes indet { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
+.corpus-stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+.corpus-stats div { padding: 12px; border-radius: 12px; background: var(--surface-2); }
+.corpus-stats .v { font: 400 26px/1 var(--f-display); }
+.corpus-stats .k { font-size: 11.5px; color: var(--ink-3); margin-top: 6px; }
+.doclist { margin: 14px 0 0; display: flex; flex-wrap: wrap; gap: 6px; max-height: 120px; overflow: auto; }
+.doclist span { font: 400 10.5px var(--f-mono); padding: 4px 7px; border-radius: 6px; background: var(--surface-2); color: var(--ink-2); }
+.note { font-size: 12.5px; color: var(--ink-3); margin: 12px 0 0; line-height: 1.5; }
+
+/* ───────────── Benchmarks ───────────── */
+.tabs { display: inline-flex; gap: 4px; padding: 4px; border-radius: 14px; border: 1px solid var(--line); background: var(--surface); }
+.tabs button {
+  border: 0; background: transparent; padding: 9px 16px; border-radius: 10px; cursor: pointer;
+  font-weight: 600; font-size: 13.5px; color: var(--ink-2); display: inline-flex; gap: 8px; align-items: center;
+}
+.tabs button[aria-selected="true"] { background: var(--accent); color: var(--on-accent); }
+.tabs button:disabled { opacity: .4; cursor: not-allowed; }
+.tabs small { font: 400 10px var(--f-mono); opacity: .8; }
+.bench-grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 18px; }
+.span-12 { grid-column: span 12; } .span-7 { grid-column: span 7; } .span-5 { grid-column: span 5; } .span-6 { grid-column: span 6; } .span-4 { grid-column: span 4; } .span-8 { grid-column: span 8; }
+.headline { display: grid; grid-template-columns: 1.4fr repeat(3, 1fr); gap: 0; padding: 0; overflow: hidden; }
+.headline > div { padding: 24px; }
+.headline > div + div { border-left: 1px solid var(--line); }
+.headline .claim { font: 400 clamp(22px, 2.4vw, 30px)/1.2 var(--f-display); margin: 8px 0 0; }
+.headline .claim em { color: var(--accent-ink); }
+.metric .v { font: 400 44px/1 var(--f-display); letter-spacing: -0.02em; display: flex; align-items: baseline; gap: 8px; }
+.metric .ci { font: 400 11px var(--f-mono); color: var(--ink-3); margin-top: 8px; }
+.metric .k { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--ink-2); margin-bottom: 12px; }
+
+.pchart { display: grid; gap: 4px; }
+.prow { display: grid; grid-template-columns: 150px 1fr 120px; align-items: center; gap: 14px; padding: 7px 8px; border-radius: 10px; transition: background .2s; }
+.prow:hover { background: var(--accent-soft); }
+.prow .name { font-size: 13.5px; display: flex; align-items: center; gap: 8px; }
+.prow .track { position: relative; height: 22px; }
+.prow .track::before { content: ""; position: absolute; inset: 10px 0; height: 2px; background: var(--line); }
+.prow .fill { position: absolute; left: 0; top: 4px; height: 14px; border-radius: 0 4px 4px 0; transform-origin: left; animation: grow 1s cubic-bezier(.2,.7,.2,1) both; }
+.prow .ci-line { position: absolute; top: 10px; height: 2px; background: var(--ink); opacity: .7; }
+.prow .ci-line::before, .prow .ci-line::after { content: ""; position: absolute; top: -5px; width: 2px; height: 12px; background: var(--ink); }
+.prow .ci-line::before { left: 0; } .prow .ci-line::after { right: 0; }
+.prow .val { font: 400 13px var(--f-mono); text-align: right; }
+.prow .val small { display: block; font-size: 10px; color: var(--ink-3); }
+.prow.hero-row .name { font-weight: 700; }
+.axis { display: grid; grid-template-columns: 150px 1fr 120px; gap: 14px; padding: 0 8px; margin-top: 6px; }
+.axis .ticks { position: relative; height: 16px; font: 400 10px var(--f-mono); color: var(--ink-3); }
+.axis .ticks span { position: absolute; transform: translateX(-50%); }
+.hatch { background-image: repeating-linear-gradient(45deg, rgba(255,255,255,.35) 0 2px, transparent 2px 6px); }
+
+.heat { width: 100%; border-collapse: separate; border-spacing: 3px; font-size: 13px; }
+.heat th { font: 500 11px var(--f-mono); color: var(--ink-3); text-align: center; padding: 6px 4px; font-weight: 400; }
+.heat th:first-child { text-align: left; }
+.heat td { text-align: center; padding: 12px 6px; border-radius: 8px; font: 400 12.5px var(--f-mono); position: relative; }
+.heat td:first-child { text-align: left; font: 500 13px var(--f-ui); color: var(--ink-2); background: transparent !important; padding-left: 0; }
+.heat td.top::after { content: "▲"; position: absolute; top: 3px; right: 5px; font-size: 7px; }
+.heat .n { display: block; font-size: 9.5px; color: var(--ink-3); font-family: var(--f-mono); }
+
+.stack { display: flex; height: 34px; gap: 2px; border-radius: 6px; overflow: hidden; margin: 6px 0 12px; }
+.stack span { display: grid; place-items: center; font: 500 11px var(--f-mono); color: #fff; min-width: 2px; transform-origin: left; animation: grow .9s cubic-bezier(.2,.7,.2,1) both; }
+.facts { display: grid; gap: 10px; margin-top: 8px; }
+.fact { display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px; border-radius: 12px; background: var(--surface-2); font-size: 13.5px; line-height: 1.5; }
+.fact .tag { font: 500 10px var(--f-mono); padding: 4px 7px; border-radius: 5px; white-space: nowrap; border: 1px solid var(--line); }
+.fact .tag.sig { color: var(--good); } .fact .tag.ns { color: var(--ink-3); }
+.mrow { display: grid; grid-template-columns: 110px repeat(3, 1fr); gap: 10px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+.mrow:last-child { border-bottom: 0; }
+.mrow.head { font: 400 10.5px var(--f-mono); color: var(--ink-3); padding-top: 0; }
+.mcell { display: grid; gap: 4px; }
+.mcell .v { font: 400 12.5px var(--f-mono); }
+.mcell .meter span { background: var(--c); }
+details.table-view { margin-top: 14px; }
+details.table-view summary { cursor: pointer; font: 400 11px var(--f-mono); color: var(--ink-3); }
+.tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 10px; }
+.tbl th, .tbl td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+.tbl th { font: 400 10.5px var(--f-mono); color: var(--ink-3); text-transform: uppercase; letter-spacing: .05em; }
+.tbl td.mono, .tbl td.r { font-family: var(--f-mono); font-size: 11.5px; }
+.tbl-wrap { overflow-x: auto; }
+
+/* ───────────── Telemetry ───────────── */
+.tele-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.live { display: inline-flex; align-items: center; gap: 8px; font: 400 11px var(--f-mono); color: var(--ink-3); }
+.live .dot { animation: pulse 2s infinite; }
+.kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 18px; }
+.kpi { padding: 18px 20px; }
+.kpi .k { font-size: 12px; color: var(--ink-2); display: flex; justify-content: space-between; gap: 8px; }
+.kpi .k .mono { color: var(--ink-3); font-size: 10px; }
+.kpi .v { font: 400 36px/1 var(--f-display); margin-top: 12px; letter-spacing: -0.02em; }
+.kpi .v small { font: 400 12px var(--f-mono); color: var(--ink-3); margin-left: 4px; letter-spacing: 0; }
+.kpi .sub { font: 400 11px var(--f-mono); color: var(--ink-3); margin-top: 8px; }
+.tele-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 18px; margin-top: 18px; }
+.hbar { display: grid; grid-template-columns: 96px 1fr 120px; gap: 12px; align-items: center; margin: 10px 0; font-size: 13px; }
+.hbar .track { height: 12px; border-radius: 4px; background: var(--surface-2); overflow: hidden; position: relative; }
+.hbar .track span { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 0 4px 4px 0; transform-origin: left; animation: grow .9s cubic-bezier(.2,.7,.2,1) both; }
+.hbar .track span.p95 { opacity: .3; }
+.hbar .v { font: 400 11.5px var(--f-mono); color: var(--ink-2); text-align: right; }
+.status-ok { color: var(--good); } .status-err { color: var(--bad); }
+
+/* ───────────── Footer, toast, tooltip ───────────── */
+footer { border-top: 1px solid var(--line); padding: 34px 0 48px; margin-top: 40px; color: var(--ink-3); font-size: 13px; }
+footer .wrap { display: flex; justify-content: space-between; gap: 18px; flex-wrap: wrap; }
+footer b { font: 400 20px var(--f-display); color: var(--ink); }
+.toast {
+  position: fixed; left: 50%; bottom: 24px; transform: translate(-50%, 30px); opacity: 0; z-index: 100;
+  background: var(--ink); color: var(--bg); padding: 12px 18px; border-radius: 12px; font-size: 14px; max-width: min(560px, calc(100% - 32px));
+  transition: opacity .3s, transform .3s; pointer-events: none; box-shadow: 0 20px 50px -20px rgba(0,0,0,.5);
+}
+.toast.show { opacity: 1; transform: translate(-50%, 0); }
+.toast.err { background: var(--bad); color: #fff; }
+.tip {
+  position: fixed; z-index: 120; pointer-events: none; opacity: 0; transition: opacity .12s;
+  background: var(--surface-solid); color: var(--ink); border: 1px solid var(--line-strong); border-radius: 10px;
+  padding: 8px 11px; font: 400 11.5px/1.5 var(--f-mono); max-width: 280px; box-shadow: 0 14px 30px -14px rgba(0,0,0,.45);
+}
+.tip.show { opacity: 1; }
+
+/* ───────────── Responsive & motion ───────────── */
+@media (max-width: 1020px) {
+  .hero .wrap, .res-grid, .ingest-grid, .loading, .tele-grid { grid-template-columns: 1fr; }
+  .cmp { grid-template-columns: 1fr; }
+  .bench-grid > * { grid-column: span 12 !important; }
+  .headline { grid-template-columns: 1fr 1fr; }
+  .headline > div:first-child { grid-column: span 2; border-bottom: 1px solid var(--line); }
+  .headline > div:nth-child(2) { border-left: 0; }
+  .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .nav { display: none; }
+  .how-steps { grid-template-columns: 1fr 1fr; }
+  .how-steps li:nth-child(3) { border-left: 0; }
+  .how-steps li:nth-child(n+3) { border-top: 1px solid var(--line); }
+}
+@media (max-width: 640px) {
+  .hero { padding-top: 40px; }
+  .stats { grid-template-columns: repeat(2, 1fr); }
+  .stat:nth-child(3) { border-left: 0; padding-left: 0; }
+  .prow, .axis { grid-template-columns: 96px 1fr 76px; gap: 8px; }
+  .prow .val small { display: none; }
+  .kv { grid-template-columns: repeat(2, 1fr); }
+  .headline { grid-template-columns: 1fr; }
+  .headline > div:first-child { grid-column: auto; }
+  .headline > div + div { border-left: 0; border-top: 1px solid var(--line); }
+  .mrow { grid-template-columns: 80px repeat(3, 1fr); }
+  .pill.model { display: none; }
+  .brand small { display: none; }
+  .console-bar .btn { margin-left: 0; width: 100%; }
+  .hbar { grid-template-columns: 80px 1fr 90px; }
+  .how-steps { grid-template-columns: 1fr; }
+  .how-steps li + li { border-left: 0; border-top: 1px solid var(--line); }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
+  .reveal { opacity: 1; transform: none; }
+  html { scroll-behavior: auto; }
+}
 </style>
-<script>
-(function() {
-  var saved = localStorage.getItem('ledger_theme');
-  var theme = saved || (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
-  document.documentElement.setAttribute('data-theme', theme);
-})();
-</script>
 </head>
 <body>
 
-<div class="shell">
-  <aside class="sidebar">
-    <div class="brand">
-      <div class="brand-mark">L</div>
-      <div class="brand-text">
-        <h1>Ledger</h1>
-        <p class="tagline">GraphRAG for financial reports</p>
-      </div>
-      <button class="theme-toggle" id="theme-toggle" title="Toggle light/dark" aria-label="Toggle light/dark theme"></button>
-    </div>
-
-    <nav class="tabs" id="tabs">
-      <button class="tab-btn active" data-tab="graph">Knowledge graph</button>
-      <button class="tab-btn" data-tab="ask">Ask</button>
-      <button class="tab-btn" data-tab="communities">Communities</button>
-      <button class="tab-btn" data-tab="benchmark">Benchmark</button>
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="#top" aria-label="Ledger home">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="9" fill="var(--accent)"/><path d="M6.5 16h7M13.5 16c5 0 6-7 12-7M13.5 16h12M13.5 16c5 0 6 7 12 7" stroke="var(--on-accent)" stroke-width="2.2" fill="none" stroke-linecap="round"/><circle cx="13.5" cy="16" r="3.2" fill="var(--s-router)"/></svg>
+      <b>Ledger</b><small>adaptive rag</small>
+    </a>
+    <nav class="nav" aria-label="Sections">
+      <a href="#ask">Ask</a><a href="#ingest">Ingest</a><a href="#benchmarks">Benchmarks</a><a href="#telemetry">Telemetry</a>
     </nav>
-
-    <div class="sidebar-section">
-      <h4 class="sidebar-heading">Corpus</h4>
-      <div id="ollama-warning"></div>
-      <div id="ingest-controls"></div>
-      <div id="ingest-log"></div>
-      <div id="ingest-error"></div>
+    <div class="top-right">
+      <span class="pill model" id="pill-llm" title="Language model endpoint"><span class="dot"></span><span>connecting…</span></span>
+      <span class="pill" id="pill-router" title="Router policy"><span class="dot"></span><span>router</span></span>
+      <button class="icon-btn" id="theme" aria-label="Toggle colour theme">
+        <svg class="theme-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5Z"/></svg>
+        <svg class="theme-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+      </button>
     </div>
+  </div>
+</header>
 
-    <div class="sidebar-footer">
-      <p>GraphRAG retrieves graph neighborhoods or community summaries without vector-chunk fallback. Vector RAG retrieves semantic matches. BM25 + Vector combines keyword and semantic rankings. Auto uses a trained three-engine router when available. Language models use the configured hosted API or optional Ollama server.</p>
+<main id="top">
+  <!-- ───────── Hero ───────── -->
+  <section class="hero">
+    <div class="wrap">
+      <div>
+        <span class="eyebrow rise d1">Retrieval-augmented QA · financial filings</span>
+        <h1 class="rise d2">Three retrievers.<br><em>One learned router.</em></h1>
+        <p class="lede rise d3">Every question is classified, scored by a <b>LinUCB contextual bandit</b> trained on judged rewards, and sent to the engine most likely to answer it, whether that's <b>hybrid BM25 + dense</b>, <b>dense vector</b>, or <b>knowledge-graph</b> retrieval. Every answer is measured for latency, tokens and cost.</p>
+        <div class="cta rise d4">
+          <a class="btn primary" href="#ask">Ask a question <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a>
+          <a class="btn" href="#benchmarks">See the benchmarks</a>
+        </div>
+        <div class="stats rise d5" id="hero-stats">
+          <div class="stat"><div class="v">3</div><div class="k">retrieval engines</div></div>
+          <div class="stat"><div class="v" data-count id="hs-q">–</div><div class="k">judged questions</div></div>
+          <div class="stat"><div class="v" id="hs-router">–</div><div class="k" id="hs-router-k">router reward</div></div>
+          <div class="stat"><div class="v" id="hs-oracle">–</div><div class="k">oracle ceiling</div></div>
+        </div>
+      </div>
+      <div class="hero-visual rise d3" aria-label="Animated diagram of the router choosing an engine">
+        <div class="hv-head"><span>router replay · <b id="hv-src" style="font-weight:500;color:var(--accent-ink)"></b></span><span class="mono" id="hv-cat">–</span></div>
+        <div class="hv-q" id="hv-q">…</div>
+        <div id="hero-route"></div>
+        <div class="hv-out" id="hv-out" aria-live="polite"></div>
+      </div>
     </div>
-  </aside>
+  </section>
 
-  <main class="main" id="main">
-    <section id="tab-graph"></section>
-    <section id="tab-ask" class="hidden"></section>
-    <section id="tab-communities" class="hidden"></section>
-    <section id="tab-benchmark" class="hidden"></section>
-  </main>
-</div>
+  <!-- ───────── How it works ───────── -->
+  <section class="how">
+    <div class="wrap">
+      <ol class="how-steps">
+        <li class="reveal"><span class="how-n mono">01</span><h3>Classify</h3><p>The LLM tags the question as a <b>local</b> fact, <b>global</b> synthesis, <b>multi-hop</b> chain or <b>consistency</b> check.</p><span class="how-io mono">question → category</span></li>
+        <li class="reveal"><span class="how-n mono">02</span><h3>Featurize</h3><p>Corpus structure (shared entities, modularity, R-GCN link AUC) plus the category form an <b>8-d context</b>.</p><span class="how-io mono">corpus + category → x ∈ ℝ⁸</span></li>
+        <li class="reveal"><span class="how-n mono">03</span><h3>Route</h3><p>A <b>LinUCB</b> bandit, fit offline on judged rewards and frozen, predicts each engine's reward and picks the best.</p><span class="how-io mono">argmax θₐᵀx</span></li>
+        <li class="reveal"><span class="how-n mono">04</span><h3>Answer &amp; measure</h3><p>The chosen engine retrieves and answers with citations. Every stage is traced for <b>latency, tokens and cost</b>.</p><span class="how-io mono">answer + trace</span></li>
+      </ol>
+    </div>
+  </section>
+
+  <!-- ───────── Ask ───────── -->
+  <section class="block" id="ask">
+    <div class="wrap">
+      <div class="sec-head reveal">
+        <div><span class="num">01 / QUERY</span><h2>Ask the filings</h2>
+          <p>Leave it on <b>Auto</b> to let the router choose, force an engine, or run all three side by side and compare answers, latency and cost.</p></div>
+      </div>
+      <form class="card console reveal" id="ask-form" autocomplete="off">
+        <div class="console-in">
+          <label for="q" class="sr-only">Question</label>
+          <textarea id="q" class="qbox" rows="2" placeholder="What was the year-over-year change in net revenue, and what drove it?" required></textarea>
+          <div class="chips" id="chips"></div>
+        </div>
+        <div class="console-bar">
+          <div class="seg" role="group" aria-label="Engine" id="engine-seg">
+            <button type="button" data-engine="auto" aria-pressed="true"><span class="swatch" style="background:var(--s-router)"></span>Auto · router</button>
+            <button type="button" data-engine="hybrid_rag" aria-pressed="false"><span class="swatch" style="background:var(--s-hybrid)"></span>Hybrid</button>
+            <button type="button" data-engine="vector_rag" aria-pressed="false"><span class="swatch" style="background:var(--s-vector)"></span>Vector</button>
+            <button type="button" data-engine="graphrag" aria-pressed="false"><span class="swatch" style="background:var(--s-graph)"></span>Graph</button>
+            <button type="button" data-engine="compare" aria-pressed="false">Compare all</button>
+          </div>
+          <button class="btn primary" type="submit" id="ask-btn">Route &amp; answer <span class="kbd">Ctrl ↵</span></button>
+        </div>
+      </form>
+      <div class="results" id="results" aria-live="polite"></div>
+    </div>
+  </section>
+
+  <!-- ───────── Ingest ───────── -->
+  <section class="block" id="ingest">
+    <div class="wrap">
+      <div class="sec-head reveal">
+        <div><span class="num">02 / CORPUS</span><h2>Bring your own filings</h2>
+          <p>Uploads are chunked and embedded for vector and BM25 search, and an LLM extracts entities into a knowledge graph. Every engine and the router's features update after ingestion.</p></div>
+      </div>
+      <div class="ingest-grid">
+        <div class="card reveal">
+          <div class="drop" id="drop" tabindex="0" role="button" aria-label="Add files: drop them here or press Enter to browse">
+            <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M14 6h14l10 10v24a2 2 0 0 1-2 2H14a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2Z"/><path d="M28 6v10h10"/><path d="M24 34V22M19 27l5-5 5 5"/></svg>
+            <h4>Drop filings here</h4>
+            <p>or click to browse. 10-Ks, earnings releases, notes.</p>
+            <div class="limits" id="limits"></div>
+            <input type="file" id="file-input" multiple hidden>
+          </div>
+          <ul class="files" id="files"></ul>
+          <div class="ingest-actions">
+            <div class="seg" role="group" aria-label="Ingestion mode" id="mode-seg">
+              <button type="button" data-mode="add" aria-pressed="true">Add to corpus</button>
+              <button type="button" data-mode="replace" aria-pressed="false">Replace corpus</button>
+            </div>
+            <button class="btn sm" type="button" id="sample-btn">Load sample corpus</button>
+            <button class="btn primary" type="button" id="ingest-btn" disabled>Ingest files</button>
+          </div>
+          <div id="job"></div>
+        </div>
+        <div class="side">
+          <div class="card reveal">
+            <div class="card-title"><h3>Current corpus</h3><span class="hint" id="corpus-hint"></span></div>
+            <div class="corpus-stats" id="corpus-stats"></div>
+            <div class="doclist" id="doclist"></div>
+          </div>
+          <div class="card reveal">
+            <div class="card-title"><h3>Router policy</h3></div>
+            <div id="policy"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ───────── Benchmarks ───────── -->
+  <section class="block" id="benchmarks">
+    <div class="wrap">
+      <div class="sec-head reveal">
+        <div><span class="num">03 / EVALUATION</span><h2>Does routing pay off?</h2>
+          <p>FinQA filings, with numeric answers scored by an exact scalar check and text answers by a blinded LLM judge. The router is fit on <b>train</b> rewards and frozen. <b>Dev</b> and <b>test</b> are held out. Error bars are bootstrap 95% CIs.</p></div>
+        <div class="tabs" role="tablist" id="split-tabs">
+          <button role="tab" data-split="train" aria-selected="false">Train <small></small></button>
+          <button role="tab" data-split="dev" aria-selected="false">Dev <small></small></button>
+          <button role="tab" data-split="test" aria-selected="false">Test <small></small></button>
+        </div>
+      </div>
+      <div id="bench" class="bench-grid"><div class="card span-12 empty">Loading benchmark results…</div></div>
+    </div>
+  </section>
+
+  <!-- ───────── Telemetry ───────── -->
+  <section class="block" id="telemetry">
+    <div class="wrap">
+      <div class="sec-head reveal">
+        <div><span class="num">04 / OBSERVABILITY</span><h2>Live telemetry</h2>
+          <p>Every request is traced: latency per stage, provider-reported token counts, generation throughput and estimated cost, plus quality signals that need no reference answer (citation coverage, abstention).</p></div>
+        <div class="tele-bar">
+          <span class="live"><span class="dot ok"></span><span id="tele-updated">live</span></span>
+          <div class="seg" role="group" aria-label="Time window" id="window-seg">
+            <button type="button" data-w="60" aria-pressed="true">1h</button>
+            <button type="button" data-w="1440" aria-pressed="false">24h</button>
+            <button type="button" data-w="10080" aria-pressed="false">7d</button>
+            <button type="button" data-w="43200" aria-pressed="false">30d</button>
+          </div>
+        </div>
+      </div>
+      <div id="tele"></div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <div><b>Ledger</b><br>Adaptive retrieval for financial filings.</div>
+    <div class="mono" id="foot-meta" style="font-size:11px; line-height:1.8; text-align:right"></div>
+  </div>
+</footer>
+
+<div class="toast" id="toast" role="status"></div>
+<div class="tip" id="tip" role="tooltip"></div>
 
 <script>
-const API_BASE = (localStorage.getItem('ledger_api_base') || (location.protocol === 'file:' ? 'http://localhost:8000' : location.origin)) + '/api';
+/* ───────────── Setup ───────────── */
+const API_BASE = (window.LEDGER_API_BASE || safeGet('ledger_api_base') ||
+  (location.protocol === 'file:' ? 'http://localhost:8000' : location.origin)).replace(/\/$/, '') + '/api';
 
-const state = { status: null, ingesting: false, tab: 'graph', network: null, ingestMode: 'add' };
+const ENGINES = ['graphrag', 'vector_rag', 'hybrid_rag'];
+const META = {
+  graphrag:   { name: 'Graph',  long: 'Knowledge graph', color: 'var(--s-graph)' },
+  vector_rag: { name: 'Vector', long: 'Dense vector',    color: 'var(--s-vector)' },
+  hybrid_rag: { name: 'Hybrid', long: 'BM25 + dense (RRF)', color: 'var(--s-hybrid)' },
+  router:     { name: 'Router', long: 'Adaptive router', color: 'var(--s-router)' },
+  random:     { name: 'Random', long: 'Random engine',   color: 'var(--s-neutral)' },
+  oracle:     { name: 'Oracle', long: 'Best engine per question (ceiling)', color: 'var(--s-neutral)' },
+};
+const CATS = ['local', 'global', 'multi_hop', 'conflict'];
+const CAT_LABEL = { local: 'Local fact', global: 'Global synthesis', multi_hop: 'Multi-hop', conflict: 'Consistency', numeric: 'Numeric (all)', text: 'Text (all)' };
+const SAMPLES = [
+  ['local', 'What was total net revenue in the most recent quarter, and how did it change year over year?'],
+  ['global', 'Compare gross margin trends across all companies in the corpus.'],
+  ['multi_hop', 'How did operating expenses change as a share of revenue, and what drove the change?'],
+  ['conflict', 'Are non-GAAP adjustments defined consistently across these filings?'],
+];
+const state = { status: null, rl: null, split: null, engine: 'auto', mode: 'add', files: [], windowMin: 60, job: null };
 
-/* ---------------- theme ---------------- */
-
-const SUN_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>';
-const MOON_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a7 7 0 0 0 10.5 10.5Z"/></svg>';
-
-function applyThemeIcon() {
-  const theme = document.documentElement.getAttribute('data-theme');
-  document.getElementById('theme-toggle').innerHTML = theme === 'light' ? MOON_ICON : SUN_ICON;
-}
-
-document.getElementById('theme-toggle').addEventListener('click', () => {
-  const current = document.documentElement.getAttribute('data-theme');
-  const next = current === 'light' ? 'dark' : 'light';
-  document.documentElement.setAttribute('data-theme', next);
-  localStorage.setItem('ledger_theme', next);
-  applyThemeIcon();
-});
-applyThemeIcon();
-
+function safeGet(k) { try { return localStorage.getItem(k); } catch { return null; } }
+function safeSet(k, v) { try { localStorage.setItem(k, v); } catch {} }
+const $ = (s, el = document) => el.querySelector(s);
+const $$ = (s, el = document) => [...el.querySelectorAll(s)];
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const fmt = {
+  r: v => v == null ? '–' : (+v).toFixed(3),
+  pct: v => v == null ? '–' : `${Math.round(v * 100)}%`,
+  ms: v => v == null ? '–' : v >= 1000 ? `${(v / 1000).toFixed(v >= 10000 ? 0 : 1)}s` : `${Math.round(v)}ms`,
+  int: v => v == null ? '–' : Math.round(v).toLocaleString(),
+  usd: v => v == null ? '–' : v === 0 ? '$0' : v < 0.01 ? `$${v.toFixed(5)}` : `$${v.toFixed(3)}`,
+  bytes: b => b < 1024 * 1024 ? `${(b / 1024).toFixed(0)} KB` : `${(b / 1048576).toFixed(1)} MB`,
+};
 
 async function api(path, opts = {}) {
   const res = await fetch(API_BASE + path, opts);
-  if (!res.ok) {
-    let msg = res.statusText;
-    try { const j = await res.json(); msg = j.detail || msg; } catch (e) {}
-    throw new Error(msg);
-  }
-  return res.json();
+  let data = null;
+  try { data = await res.json(); } catch {}
+  if (!res.ok) throw new Error((data && (data.detail || data.message)) || `Request failed (${res.status})`);
+  return data;
 }
 
-function el(html) {
-  const t = document.createElement('template');
-  t.innerHTML = html.trim();
-  return t.content.firstChild;
+function toast(msg, err = false) {
+  const t = $('#toast');
+  t.textContent = msg; t.className = 'toast show' + (err ? ' err' : '');
+  clearTimeout(toast._t); toast._t = setTimeout(() => t.className = 'toast', err ? 6000 : 3200);
 }
 
-function escapeHtml(s) {
-  return (s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-}
-
-/* ---------------- sidebar ---------------- */
-
-async function refreshStatus() {
-  try {
-    state.status = await api('/status');
-  } catch (e) {
-    state.status = null;
-  }
-  renderSidebar();
-  if (state.tab === 'graph') renderGraphTab();
-}
-
-function renderSidebar() {
-  const s = state.status;
-  const warnEl = document.getElementById('ollama-warning');
-  const controlsEl = document.getElementById('ingest-controls');
-
-  warnEl.innerHTML = '';
-  if (s && !s.ollama_available) {
-    warnEl.appendChild(el(`<p class="warn-text">The configured ${escapeHtml(s.llm_backend || "LLM")} endpoint is unavailable. Check API credentials/model access or your Ollama server.</p>`));
-  } else if (!s) {
-    warnEl.appendChild(el(`<p class="warn-text">Can't reach the Ledger backend. Is <span class="mono">uvicorn app.main:app</span> running on port 8000?</p>`));
-  }
-
-  controlsEl.innerHTML = '';
-  if (!s || !s.ingested) {
-    controlsEl.appendChild(el(`<p class="dim-text">No documents ingested yet.</p>`));
-    const btn = el(`<button class="btn primary" id="ingest-sample-btn">${state.ingesting ? '<span class="spinner"></span> Ingesting…' : 'Ingest 3 sample earnings releases'}</button>`);
-    btn.disabled = state.ingesting;
-    btn.onclick = handleIngestSample;
-    controlsEl.appendChild(btn);
-  } else {
-    const grid = el(`<div class="stat-grid">
-      <div class="stat"><span class="stat-num">${s.num_nodes}</span><span class="stat-label">entities</span></div>
-      <div class="stat"><span class="stat-num">${s.num_edges}</span><span class="stat-label">relations</span></div>
-      <div class="stat"><span class="stat-num">${s.num_communities}</span><span class="stat-label">communities</span></div>
-    </div>`);
-    controlsEl.appendChild(grid);
-    const pills = el('<div class="doc-pills"></div>');
-    (s.doc_ids || []).forEach(d => pills.appendChild(el(`<span class="pill doc">${escapeHtml(d)}</span>`)));
-    controlsEl.appendChild(pills);
-
-    const rgcnOn = s.rgcn_available && s.rgcn_trained;
-    controlsEl.appendChild(el(`<div class="rgcn-badge"><span class="rgcn-dot ${rgcnOn ? 'on' : ''}"></span>
-      ${s.rgcn_available
-        ? (rgcnOn ? `R-GCN embeddings trained (${s.rgcn_num_nodes} nodes)` : 'R-GCN not trained yet')
-        : 'R-GCN unavailable — install torch (pip install torch) for graph-embedding retrieval'}
-    </div>`));
-  }
-
-  // drag-and-drop upload zone
-  const dz = el(`<div class="dropzone" id="dropzone" tabindex="0">
-    <span class="dz-icon">⬆</span>
-    <span>${state.ingesting ? 'Ingesting…' : 'Drop .txt / .pdf files here, or click to browse'}</span>
-    <input type="file" multiple accept=".txt,.pdf" id="upload-input" ${state.ingesting ? 'disabled' : ''} hidden>
-  </div>`);
-  controlsEl.appendChild(dz);
-
-  if (s && s.ingested) {
-    controlsEl.appendChild(el(`<div class="mode-toggle">
-      <label><input type="radio" name="ingest-mode" value="add" ${state.ingestMode === 'add' ? 'checked' : ''}> Add to corpus</label>
-      <label><input type="radio" name="ingest-mode" value="replace" ${state.ingestMode === 'replace' ? 'checked' : ''}> Replace corpus</label>
-    </div>`));
-    controlsEl.querySelectorAll('input[name="ingest-mode"]').forEach(r => {
-      r.onchange = (e) => { state.ingestMode = e.target.value; };
-    });
-  }
-
-  wireDropzone();
-
-  const errEl = document.getElementById('ingest-error');
-  errEl.innerHTML = '';
-}
-
-function wireDropzone() {
-  const dz = document.getElementById('dropzone');
-  const input = document.getElementById('upload-input');
-  if (!dz || !input) return;
-  dz.addEventListener('click', () => input.click());
-  input.addEventListener('change', () => handleUpload(Array.from(input.files || [])));
-  ['dragenter', 'dragover'].forEach(evt => dz.addEventListener(evt, (e) => {
-    e.preventDefault(); e.stopPropagation(); dz.classList.add('dragover');
-  }));
-  ['dragleave', 'drop'].forEach(evt => dz.addEventListener(evt, (e) => {
-    e.preventDefault(); e.stopPropagation(); dz.classList.remove('dragover');
-  }));
-  dz.addEventListener('drop', (e) => {
-    const files = Array.from(e.dataTransfer.files || []).filter(
-      f => /\.(txt|pdf)$/i.test(f.name)
-    );
-    if (files.length) handleUpload(files);
+/* Theme: OS preference by default; explicit choice persisted. */
+(function initTheme() {
+  const saved = safeGet('ledger_theme');
+  if (saved) document.documentElement.dataset.theme = saved;
+  $('#theme').addEventListener('click', () => {
+    const cur = document.documentElement.dataset.theme ||
+      (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+    const next = cur === 'dark' ? 'light' : 'dark';
+    document.documentElement.dataset.theme = next; safeSet('ledger_theme', next);
   });
+})();
+
+/* Tooltip: any element with data-tip. */
+(function initTip() {
+  const tip = $('#tip');
+  document.addEventListener('pointermove', e => {
+    const el = e.target.closest('[data-tip]');
+    if (!el) { tip.classList.remove('show'); return; }
+    tip.innerHTML = el.dataset.tip;
+    tip.classList.add('show');
+    const r = tip.getBoundingClientRect();
+    let x = e.clientX + 14, y = e.clientY + 14;
+    if (x + r.width > innerWidth - 8) x = e.clientX - r.width - 14;
+    if (y + r.height > innerHeight - 8) y = e.clientY - r.height - 14;
+    tip.style.left = x + 'px'; tip.style.top = y + 'px';
+  });
+})();
+
+/* Scroll reveals + active nav. */
+const io = new IntersectionObserver(es => es.forEach(e => { if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); } }), { threshold: .08 });
+function observeReveals(root = document) { $$('.reveal:not(.in)', root).forEach(el => io.observe(el)); }
+observeReveals();
+const navIo = new IntersectionObserver(es => es.forEach(e => {
+  if (e.isIntersecting) $$('.nav a').forEach(a => a.classList.toggle('on', a.getAttribute('href') === '#' + e.target.id));
+}), { rootMargin: '-45% 0px -50% 0px' });
+$$('section.block').forEach(s => navIo.observe(s));
+
+function countUp(el, to, dec = 0) {
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) { el.textContent = (+to).toFixed(dec); return; }
+  const start = performance.now(), dur = 1100;
+  const step = t => {
+    const p = Math.min(1, (t - start) / dur), e = 1 - Math.pow(1 - p, 3);
+    el.textContent = (to * e).toFixed(dec);
+    if (p < 1) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
 }
 
-async function handleIngestSample() {
-  state.ingesting = true;
-  document.getElementById('ingest-error').innerHTML = '';
-  document.getElementById('ingest-log').innerHTML = '';
-  renderSidebar();
+/* ───────────── Route diagram ───────────── */
+function routeSVG(opts = {}) {
+  const { rewards = null, chosen = null, busy = false, compact = false } = opts;
+  const W = 520, H = compact ? 230 : 290;
+  const ys = compact ? [42, 115, 188] : [52, 145, 238];
+  const order = ['hybrid_rag', 'vector_rag', 'graphrag'];
+  const rx = 210, ry = H / 2, ex = 372;
+  const branches = order.map((e, i) => {
+    const y = ys[i], on = chosen === e, dim = chosen && !on;
+    const d = `M${rx + 22},${ry} C${rx + 90},${ry} ${ex - 80},${y} ${ex},${y}`;
+    const val = rewards && rewards[e] != null ? `<text class="val" x="${ex + 128}" y="${y + 4}" text-anchor="end">${(+rewards[e]).toFixed(2)}</text>` : '';
+    return `<g class="branch ${on ? 'on' : ''} ${dim ? 'dim' : ''}" data-engine="${e}">
+      <path class="wire" d="${d}" ${on ? `style="stroke:${META[e].color}"` : ''}/>
+      <path class="flow" d="${d}" style="stroke:${on ? 'var(--s-router)' : META[e].color}"/>
+      <rect class="node-box" x="${ex}" y="${y - 24}" width="138" height="48" rx="12" ${on ? `style="stroke:${META[e].color}"` : ''}/>
+      <rect x="${ex + 12}" y="${y - 5}" width="10" height="10" rx="2" fill="${META[e].color}"/>
+      <text class="lbl" x="${ex + 30}" y="${y - 1}">${META[e].name}</text>
+      <text class="sub" x="${ex + 30}" y="${y + 13}">${e === 'hybrid_rag' ? 'bm25+dense' : e === 'vector_rag' ? 'dense' : 'graph'}</text>
+      ${val}
+    </g>`;
+  }).join('');
+  return `<svg class="route ${busy ? 'busy' : ''}" viewBox="0 0 ${W} ${H}" role="img" aria-label="${chosen ? 'Router selected ' + META[chosen].long : 'Router idle'}">
+    <rect class="node-box" x="4" y="${ry - 22}" width="104" height="44" rx="22"/>
+    <text class="lbl" x="56" y="${ry + 5}" text-anchor="middle">Question</text>
+    <path class="q-wire" d="M108,${ry} L${rx - 30},${ry}"/>
+    ${branches}
+    <circle class="router-ring" cx="${rx}" cy="${ry}" r="30"/>
+    <circle cx="${rx}" cy="${ry}" r="21" fill="var(--surface-solid)" stroke="var(--line-strong)"/>
+    <circle class="router-core" cx="${rx}" cy="${ry}" r="9"/>
+    <text class="sub" x="${rx}" y="${ry + 50}" text-anchor="middle">linucb router</text>
+  </svg>`;
+}
+
+/* Hero: replay real routed questions from the evaluation runs (illustrative only if none exist). */
+const hero = { examples: [], i: 0, timer: null };
+function heroTick() {
+  const host = $('#hero-route'), list = hero.examples;
+  if (!list.length) return;
+  const d = list[hero.i++ % list.length];
+  $('#hv-q').textContent = '“' + d.question + '”';
+  $('#hv-cat').textContent = (CAT_LABEL[d.category] || d.category).toLowerCase() + (d.task === 'numeric' ? ' · numeric' : '');
+  $('#hv-out').innerHTML = '';
+  host.innerHTML = routeSVG({ busy: true });
+  setTimeout(() => {
+    host.innerHTML = routeSVG({ rewards: d.predicted_rewards, chosen: d.chosen });
+    if (d.router_reward == null) return;
+    const hit = d.router_reward >= d.oracle_reward - 1e-9;
+    setTimeout(() => {
+      $('#hv-out').innerHTML = `<span class="flag ${hit ? 'good' : 'warn'}">${hit ? '✓ best available' : '△ missed best'}</span>
+        <span>judged <b>${(+d.router_reward).toFixed(2)}</b> · best engine <b>${(+d.oracle_reward).toFixed(2)}</b></span>
+        <span class="muted">${ENGINES.map(e => `${META[e].name} ${d.judged_rewards[e] == null ? '–' : (+d.judged_rewards[e]).toFixed(1)}`).join(' · ')}</span>`;
+    }, 700);
+  }, 1300);
+}
+async function heroDemo() {
   try {
-    const res = await api('/ingest/sample', { method: 'POST' });
-    document.getElementById('ingest-log').innerHTML =
-      `<p class="dim-text small">Ingested ${res.doc_ids.length} doc(s) · ${res.num_chunks} chunks · ${res.num_entities} entities · ${res.num_triples} triples · ${res.num_communities} communities</p>`;
-    await refreshStatus();
+    const r = await api('/rl/examples?limit=12');
+    hero.examples = r.examples || [];
+    $('#hv-src').textContent = r.held_out ? `held-out ${r.split}` : r.split ? 'train · in-sample' : '';
+  } catch {}
+  if (!hero.examples.length) {
+    hero.examples = SAMPLES.map(([c, q], i) => ({ question: q, category: c, chosen: ['hybrid_rag', 'hybrid_rag', 'hybrid_rag', 'vector_rag'][i],
+      predicted_rewards: [{ hybrid_rag: .93, vector_rag: .88, graphrag: .55 }, { hybrid_rag: .88, vector_rag: .86, graphrag: .53 },
+        { hybrid_rag: .81, vector_rag: .77, graphrag: .6 }, { hybrid_rag: .94, vector_rag: .97, graphrag: .55 }][i] }));
+    $('#hv-src').textContent = 'illustrative';
+  }
+  heroTick(); clearInterval(hero.timer); hero.timer = setInterval(heroTick, 6400);
+}
+
+/* ───────────── Status ───────────── */
+async function loadStatus() {
+  try {
+    const s = state.status = await api('/status');
+    const llm = $('#pill-llm');
+    llm.querySelector('.dot').className = 'dot ' + (s.llm_available ? 'ok' : 'bad');
+    llm.lastElementChild.textContent = s.llm_available ? `${s.configured_models.answer} · ${s.llm_backend}` : 'LLM offline';
+    const rp = $('#pill-router'), r = s.router || {};
+    rp.querySelector('.dot').className = 'dot ' + (r.compatible ? 'ok' : r.deployed ? 'warn' : 'bad');
+    rp.lastElementChild.textContent = r.compatible ? 'router live' : r.deployed ? 'router: config mismatch' : 'router: fallback';
+    rp.title = r.compatible ? 'Trained router policy deployed and compatible' : 'Routing falls back to a corpus-level rule';
+    renderCorpus(s); renderPolicy(s); renderLimits(s);
+    $('#foot-meta').innerHTML = `answer model · ${esc(s.configured_models.answer)}<br>backend · ${esc(s.llm_backend)}<br>api · ${esc(API_BASE)}`;
+    if (s.active_jobs && s.active_jobs.length && !state.job) pollJob(s.active_jobs[0].id);
   } catch (e) {
-    document.getElementById('ingest-error').innerHTML = `<p class="error-text">${escapeHtml(e.message)}</p>`;
-  } finally {
-    state.ingesting = false;
-    renderSidebar();
+    const llm = $('#pill-llm');
+    llm.querySelector('.dot').className = 'dot bad';
+    llm.lastElementChild.textContent = 'API unreachable';
+    $('#corpus-stats').innerHTML = `<div class="empty" style="grid-column:span 2">Backend unreachable at <span class="mono">${esc(API_BASE)}</span></div>`;
   }
 }
 
-async function handleUpload(files) {
-  if (!files || files.length === 0) return;
-  state.ingesting = true;
-  document.getElementById('ingest-error').innerHTML = '';
-  document.getElementById('ingest-log').innerHTML = '';
-  renderSidebar();
-  const form = new FormData();
-  files.forEach(f => form.append('files', f));
-  form.append('mode', state.ingestMode || 'add');
-  try {
-    const res = await api('/ingest/upload', { method: 'POST', body: form });
-    document.getElementById('ingest-log').innerHTML =
-      `<p class="dim-text small">Ingested ${res.doc_ids.length} doc(s) · ${res.num_chunks} chunks · ${res.num_entities} entities · ${res.num_triples} triples · ${res.num_communities} communities</p>`;
-    await refreshStatus();
-  } catch (e) {
-    document.getElementById('ingest-error').innerHTML = `<p class="error-text">${escapeHtml(e.message)}</p>`;
-  } finally {
-    state.ingesting = false;
-    renderSidebar();
-  }
+function renderCorpus(s) {
+  $('#corpus-hint').textContent = s.ingested ? `${s.doc_ids.length} documents` : 'empty';
+  $('#corpus-stats').innerHTML = [
+    [s.doc_ids.length, 'documents'], [s.num_nodes, 'graph entities'], [s.num_edges, 'relations'], [s.num_communities, 'communities'],
+  ].map(([v, k]) => `<div><div class="v">${fmt.int(v)}</div><div class="k">${k}</div></div>`).join('');
+  $('#doclist').innerHTML = s.doc_ids.slice(0, 60).map(d => `<span>${esc(d)}</span>`).join('') +
+    (s.doc_ids.length > 60 ? `<span>+${s.doc_ids.length - 60} more</span>` : '');
 }
 
-/* ---------------- tabs ---------------- */
+function renderPolicy(s) {
+  const r = s.router || {};
+  if (!r.deployed) {
+    $('#policy').innerHTML = `<p class="note" style="margin:0">No trained policy deployed. Auto mode uses the corpus-level fallback rule. Copy <span class="mono">RL/data/local-14b/policy.json</span> to <span class="mono">graph_state/query_bandit.json</span> to enable learned routing.</p>`;
+    return;
+  }
+  const m = r.metadata || {};
+  $('#policy').innerHTML = `
+    <div class="kv" style="margin-top:0">
+      <div><div class="k">status</div><div class="v ${r.compatible ? 'status-ok' : 'status-err'}">${r.compatible ? 'live' : 'mismatch'}</div></div>
+      <div><div class="k">arms</div><div class="v">${(r.arms || []).length}</div></div>
+      <div><div class="k">trained on</div><div class="v">${esc(m.split || '–')}</div></div>
+    </div>
+    <p class="note">LinUCB over an 8-dimensional context: corpus graph features plus the predicted question category. Serving uses the frozen policy's predicted reward, with no exploration. ${r.compatible ? '' : '<b>The serving model or retrieval version differs from training, so Auto mode falls back to the corpus rule.</b>'}</p>`;
+}
 
-document.getElementById('tabs').addEventListener('click', (e) => {
-  const btn = e.target.closest('.tab-btn');
-  if (!btn) return;
-  setTab(btn.dataset.tab);
+/* ───────────── Ask ───────────── */
+$('#chips').innerHTML = SAMPLES.map(([c, q]) => `<button type="button" class="chip" data-q="${esc(q)}"><i>${c.replace('_', '-')}</i>${esc(q.length > 64 ? q.slice(0, 62) + '…' : q)}</button>`).join('');
+$('#chips').addEventListener('click', e => { const b = e.target.closest('.chip'); if (b) { $('#q').value = b.dataset.q; $('#q').focus(); } });
+$('#engine-seg').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  state.engine = b.dataset.engine;
+  $$('#engine-seg button').forEach(x => x.setAttribute('aria-pressed', x === b));
+  $('#ask-btn').firstChild.textContent = state.engine === 'compare' ? 'Run all three ' : state.engine === 'auto' ? 'Route & answer ' : 'Answer ';
+});
+$('#q').addEventListener('keydown', e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); $('#ask-form').requestSubmit(); } });
+$('#ask-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const question = $('#q').value.trim(); if (!question) return;
+  const btn = $('#ask-btn'); btn.disabled = true;
+  const stop = renderLoading(state.engine);
+  try {
+    if (state.engine === 'compare') {
+      const r = await api('/query/compare', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ question, mode: 'auto' }) });
+      stop(); renderCompare(r);
+    } else {
+      const r = await api('/query', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ question, mode: 'auto', engine: state.engine }) });
+      stop(); renderAnswer(r);
+    }
+    loadTelemetry();
+  } catch (err) {
+    stop();
+    $('#results').innerHTML = `<div class="card"><div class="flag bad">error</div><p style="margin:12px 0 0">${esc(err.message)}</p></div>`;
+    toast(err.message, true);
+  } finally { btn.disabled = false; }
 });
 
-function setTab(tab) {
-  state.tab = tab;
-  document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
-  document.querySelectorAll('#main > section').forEach(s => s.classList.add('hidden'));
-  document.getElementById('tab-' + tab).classList.remove('hidden');
-  if (tab === 'graph') renderGraphTab();
-  if (tab === 'ask') renderAskTab();
-  if (tab === 'communities') renderCommunitiesTab();
-  if (tab === 'benchmark') renderBenchmarkTab();
+function renderLoading(engine) {
+  const steps = engine === 'compare'
+    ? ['Graph retrieval + answer', 'Vector retrieval + answer', 'Hybrid retrieval + answer', 'Scoring telemetry']
+    : engine === 'auto'
+      ? ['Classifying the question', 'Scoring engines with the bandit', 'Retrieving evidence', 'Generating a grounded answer']
+      : ['Retrieving evidence', 'Generating a grounded answer'];
+  $('#results').innerHTML = `<div class="loading">
+    <div class="card"><div class="skel" style="width:30%"></div><div class="skel"></div><div class="skel" style="width:92%"></div><div class="skel" style="width:76%"></div><div class="skel" style="width:84%"></div></div>
+    <div class="card"><div class="card-title"><h3>Working</h3><span class="hint">local LLMs can take a while</span></div>
+      <div class="elapsed mono" id="elapsed">0.0s</div>
+      <ol class="steps" id="steps">${steps.map(s => `<li>${s}</li>`).join('')}</ol>
+      ${engine === 'auto' ? `<div style="margin-top:14px">${routeSVG({ busy: true, compact: true })}</div>` : ''}
+    </div></div>`;
+  const t0 = performance.now(), lis = $$('#steps li');
+  // The API doesn't stream yet, so steps advance on a typical-latency schedule; the timer is real.
+  const marks = engine === 'compare' ? [0, 30, 60, 90] : engine === 'auto' ? [0, 6, 9, 14] : [0, 4];
+  const iv = setInterval(() => {
+    const s = (performance.now() - t0) / 1000;
+    const el = $('#elapsed'); if (el) el.textContent = s.toFixed(1) + 's';
+    lis.forEach((li, i) => { const next = marks[i + 1] ?? Infinity; li.className = s >= next ? 'done' : s >= marks[i] ? 'now' : ''; });
+  }, 100);
+  return () => clearInterval(iv);
 }
 
-function emptyState(title, body) {
-  return `<div class="empty-state"><h2>${escapeHtml(title)}</h2><p>${escapeHtml(body)}</p></div>`;
-}
-
-/* ---------------- graph tab ---------------- */
-
-const TYPE_COLORS = {
-  Company: '#c99c4a', Metric: '#6d93c9', Period: '#4a9c82', Segment: '#a084c9',
-  Person: '#c9975f', RiskFactor: '#c97363', Guidance: '#7fb894', Other: '#8a93a3',
-};
-
-async function renderGraphTab() {
-  const container = document.getElementById('tab-graph');
-  if (!state.status || !state.status.ingested) {
-    container.innerHTML = emptyState('No graph yet', 'Ingest the sample earnings releases (or your own financial reports) from the sidebar to build the knowledge graph.');
-    return;
-  }
-  container.innerHTML = `
-    <div class="panel-header">
-      <h2>Knowledge graph</h2>
-      <p>Entities and relationships extracted from the corpus. Click a node to inspect it.</p>
-    </div>
-    <div id="graph-canvas"></div>
-    <div class="legend">${Object.entries(TYPE_COLORS).map(([k,v]) => `<span class="legend-item"><span class="legend-dot" style="background:${v}"></span>${k}</span>`).join('')}</div>
-    <div class="card node-detail hidden" id="node-detail"></div>
-  `;
-  let data;
-  try {
-    data = await api('/graph');
-  } catch (e) {
-    container.innerHTML = emptyState('Could not load graph', e.message);
-    return;
-  }
-  const nodes = new vis.DataSet(data.nodes.map(n => ({
-    id: n.id, label: n.id.length > 22 ? n.id.slice(0, 20) + '…' : n.id,
-    title: n.id, color: TYPE_COLORS[n.type] || TYPE_COLORS.Other,
-    value: Math.max(6, Math.min(30, 4 + n.degree * 2)),
-    font: { color: '#e9e6dc', size: 12, face: 'IBM Plex Sans' },
-  })));
-  const edges = new vis.DataSet(data.links.map((l, i) => ({
-    id: i, from: l.source, to: l.target, arrows: 'to',
-    color: { color: '#2b3543', highlight: '#4a9c78' }, width: 1,
-  })));
-  const network = new vis.Network(document.getElementById('graph-canvas'), { nodes, edges }, {
-    physics: { stabilization: true, barnesHut: { gravitationalConstant: -12000, springLength: 140 } },
-    interaction: { hover: true },
-    nodes: { shape: 'dot', borderWidth: 1 },
+function sourceLabels(citations) {
+  const map = {};
+  (citations || []).forEach(c => {
+    const m = /SOURCE:\s*([^\s]+)/.exec(c.snippet || '');
+    if (m && !map[c.doc_id]) map[c.doc_id] = m[1].replace(/\.pdf$/, '').replace(/\/page_/, ' p.').replace(/\//g, ' ');
   });
-  state.network = network;
-  network.on('click', (params) => {
-    const detailEl = document.getElementById('node-detail');
-    if (params.nodes.length === 0) { detailEl.classList.add('hidden'); return; }
-    const nodeData = data.nodes.find(n => n.id === params.nodes[0]);
-    if (!nodeData) return;
-    detailEl.classList.remove('hidden');
-    detailEl.innerHTML = `
-      <h3>${escapeHtml(nodeData.id)}</h3>
-      <p><span class="pill emerald">${escapeHtml(nodeData.type)}</span> ${(nodeData.source_docs||[]).map(d=>`<span class="pill doc">${escapeHtml(d)}</span>`).join(' ')}</p>
-      <p class="dim-text">${escapeHtml(nodeData.description || 'No description extracted.')}</p>
-    `;
+  return map;
+}
+
+function formatAnswer(text, citations, scope) {
+  const labels = sourceLabels(citations);
+  let numeric = null;
+  const lines = String(text || '').split('\n').filter(l => {
+    const m = /^\s*FINAL_NUMERIC_ANSWER:\s*(.+)$/.exec(l);
+    if (m) { numeric = m[1].trim(); return false; }
+    return true;
   });
-}
-
-/* ---------------- ask tab ---------------- */
-
-const SAMPLE_QUESTIONS = [
-  "Compare year-over-year revenue growth across all three companies.",
-  "What was Five9's stock-based compensation vs. its GAAP net income in Q2 2025?",
-  "How did MaxLinear's operating expenses change from Q1 to Q2 2025?",
-  "Which companies improved profitability year-over-year?",
-];
-
-async function renderAskTab() {
-  const container = document.getElementById('tab-ask');
-  if (!state.status || !state.status.ingested) {
-    container.innerHTML = emptyState('Nothing to ask yet', 'Ingest documents from the sidebar first.');
-    return;
+  let html = esc(lines.join('\n'))
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\[?((?:doc_[0-9a-f]{8,}|[A-Za-z0-9_.-]+_q[1-4]_\d{4}_earnings)(?:::[\w-]+)?)\]?/g, (all, id) => {
+      const doc = id.split('::')[0];
+      return `<span class="doc" data-doc="${esc(doc)}" data-scope="${scope}" tabindex="0">${esc(labels[doc] || doc.replace(/^doc_/, '').slice(0, 8))}</span>`;
+    });
+  const blocks = html.split(/\n{2,}/).map(b => {
+    const ls = b.split('\n');
+    if (ls.every(l => /^\s*[-*•]\s+/.test(l))) return '<ul>' + ls.map(l => `<li>${l.replace(/^\s*[-*•]\s+/, '')}</li>`).join('') + '</ul>';
+    return `<p>${ls.join('<br>')}</p>`;
+  }).join('');
+  let num = '';
+  if (numeric) {
+    const m = /^([-+]?[\d,.]+|yes|no)\s*(.*)$/i.exec(numeric);
+    num = `<div class="numeric"><span class="n">${esc(m ? m[1] : numeric)}</span><span class="u">${esc(m && m[2] ? m[2] : 'final numeric answer')}</span></div>`;
   }
-  let analysis = null;
-  try { analysis = await api('/corpus-analysis'); } catch (e) {}
-
-  container.innerHTML = `
-    <div class="panel-header">
-      <h2>Ask</h2>
-      <p>Ask a question. On Auto, a trained router picks GraphRAG, vector RAG, or BM25 + vector retrieval per question — not one fixed choice for the whole corpus — based on what kind of question it is and how the corpus is structured.</p>
-    </div>
-    <div class="sample-qs">${SAMPLE_QUESTIONS.map(q => `<button class="sample-q" data-q="${escapeHtml(q)}">${escapeHtml(q)}</button>`).join('')}</div>
-    <div class="ask-form">
-      <textarea id="ask-input" placeholder="Ask a question about the ingested financial reports…"></textarea>
-      <button class="btn primary" id="ask-btn">Ask</button>
-    </div>
-    <div class="ask-controls">
-      <label><input type="checkbox" id="ask-compare"> Compare vs. vector RAG</label>
-      <label>Engine
-        <select id="ask-engine">
-          <option value="auto" selected>Auto (per-question routing)</option>
-          <option value="graphrag">GraphRAG</option>
-          <option value="vector_rag">Vector RAG</option>
-          <option value="hybrid_rag">BM25 + Vector</option>
-        </select>
-      </label>
-      <label>Mode
-        <select id="ask-mode">
-          <option value="auto" selected>Auto</option>
-          <option value="local">Local</option>
-          <option value="global">Global</option>
-        </select>
-      </label>
-    </div>
-    ${analysis ? `<p class="dim-text small" id="router-reason">Corpus structure: ${escapeHtml(analysis.reason || '')} — the engine picked for each answer below is chosen per question, shown underneath it.</p>` : ''}
-    <div id="ask-results"></div>
-  `;
-  container.querySelectorAll('.sample-q').forEach(b => b.onclick = () => {
-    document.getElementById('ask-input').value = b.dataset.q;
-    runAsk();
-  });
-  document.getElementById('ask-btn').onclick = runAsk;
-  document.getElementById('ask-input').addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) runAsk();
-  });
+  return { num, html: blocks };
 }
 
-function renderAnswer(title, badgeClass, resp) {
-  const cites = (resp.citations || []).map(c => `<div class="citation"><span class="doc">${escapeHtml(c.doc_id)}</span> — ${escapeHtml((c.snippet||'').slice(0,180))}${(c.snippet||'').length>180?'…':''}</div>`).join('');
-  const engineNote = resp.engine_reason ? `<p class="engine-reason">${escapeHtml(resp.engine_reason)}</p>` : '';
-  return `
-    <div class="answer-col">
-      <h3>${title}</h3>
-      <div class="mode-badge pill ${badgeClass}">${escapeHtml(resp.mode_used || '')}</div>
-      ${engineNote}
-      <div class="answer-body">${escapeHtml(resp.answer)}</div>
-      ${cites ? `<div class="dim-text small" style="margin-bottom:6px;">Sources</div>${cites}` : ''}
+function sourcesHTML(citations, scope) {
+  const labels = sourceLabels(citations);
+  if (!citations || !citations.length) return '';
+  return `<details class="sources"><summary>${citations.length} retrieved sources</summary>
+    ${citations.map((c, i) => `<div class="src" data-src="${esc(c.doc_id)}" data-scope="${scope}">
+      <span class="rank">${String(i + 1).padStart(2, '0')}</span>
+      <span class="meta">${esc(labels[c.doc_id] || c.doc_id)} · ${esc((c.chunk_id || '').split('::').pop())}</span>
+      <span class="snip">${esc((c.snippet || '').replace(/^SOURCE:[^\n]*\n+/, '').slice(0, 260))}…</span>
+    </div>`).join('')}</details>`;
+}
+
+document.addEventListener('click', e => {
+  const d = e.target.closest('.doc'); if (!d) return;
+  const box = d.closest('.card');
+  const det = box && box.querySelector('details.sources'); if (!det) return;
+  det.open = true;
+  const target = $$(`.src[data-scope="${d.dataset.scope}"]`, box).find(s => s.dataset.src === d.dataset.doc);
+  if (target) { target.scrollIntoView({ behavior: 'smooth', block: 'center' }); target.classList.remove('flash'); void target.offsetWidth; target.classList.add('flash'); }
+});
+
+function waterfall(m) {
+  const st = m.stage_ms || {};
+  const parts = [
+    ['routing', st.routing || 0, 'var(--s-router)', 'Routing'],
+    ['retrieval', Math.max(0, st.retrieval || 0), 'var(--s-vector)', 'Retrieval'],
+    ['generation', st.generation || 0, 'var(--accent)', 'Generation'],
+  ];
+  const known = parts.reduce((a, p) => a + p[1], 0);
+  parts.push(['other', Math.max(0, (m.latency_ms || 0) - known), 'var(--s-neutral)', 'Overhead']);
+  const total = parts.reduce((a, p) => a + p[1], 0) || 1;
+  const shown = parts.filter(p => p[1] > 0.5);
+  return `<div class="waterfall" role="img" aria-label="Latency breakdown">${shown.map((p, i) =>
+      `<span style="flex:${p[1] / total};background:${p[2]};animation-delay:${i * .08}s" data-tip="${p[3]}<br>${fmt.ms(p[1])} · ${fmt.pct(p[1] / total)}"></span>`).join('')}</div>
+    <div class="legend">${shown.map(p => `<span><i class="swatch" style="background:${p[2]}"></i>${p[3]} <span class="mono">${fmt.ms(p[1])}</span></span>`).join('')}</div>`;
+}
+
+function telemetryCard(m, q) {
+  if (!m) return '';
+  const cov = q && q.citation_coverage;
+  return `<div class="card reveal">
+    <div class="card-title"><h3>Telemetry</h3><span class="hint">${m.tokens_estimated ? 'tokens estimated' : 'provider-reported tokens'}</span></div>
+    <div class="big-latency"><span class="n">${fmt.ms(m.latency_ms)}</span><span class="u">end-to-end</span></div>
+    ${waterfall(m)}
+    <div class="kv">
+      <div><div class="k">tokens in</div><div class="v">${fmt.int(m.prompt_tokens)}</div></div>
+      <div><div class="k">tokens out</div><div class="v">${fmt.int(m.completion_tokens)}</div></div>
+      <div><div class="k">output tok/s</div><div class="v">${m.output_tokens_per_s ?? '–'}</div></div>
+      <div><div class="k">LLM calls</div><div class="v">${m.llm_calls}</div></div>
+      <div><div class="k">LLM time</div><div class="v">${fmt.ms(m.llm_ms)}</div></div>
+      <div data-tip="${esc(m.cost_basis)}"><div class="k">est. cost</div><div class="v">${fmt.usd(m.cost_usd)}</div></div>
     </div>
-  `;
+    ${q ? `<div class="kv">
+      <div style="grid-column:span 2"><div class="k">citation coverage <span class="muted">· retrieved docs cited inline</span></div><div class="v">${cov == null ? '–' : fmt.pct(cov)}</div>${cov == null ? '' : `<div class="meter"><span style="width:${cov * 100}%"></span></div>`}</div>
+      <div><div class="k">answer</div><div class="v" style="font-size:12px;margin-top:6px">${q.abstained ? '<span class="flag warn">abstained</span>' : '<span class="flag good">answered</span>'}</div></div>
+    </div>` : ''}
+  </div>`;
 }
 
-async function runAsk() {
-  const question = document.getElementById('ask-input').value.trim();
-  if (!question) return;
-  const mode = document.getElementById('ask-mode').value;
-  const engine = document.getElementById('ask-engine').value;
-  const compare = document.getElementById('ask-compare').checked;
-  const resultsEl = document.getElementById('ask-results');
-  resultsEl.innerHTML = `<p class="dim-text"><span class="spinner"></span> Thinking…</p>`;
-  try {
-    if (compare) {
-      const res = await api('/query/compare', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question, mode }),
-      });
-      resultsEl.innerHTML = `<div class="compare-grid">
-        ${renderAnswer('GraphRAG', 'emerald', res.graphrag)}
-        ${renderAnswer('Vector RAG (baseline)', 'vector', res.vector_rag)}
-        ${res.hybrid_rag ? renderAnswer('BM25 + Vector', 'vector', res.hybrid_rag) : ''}
-      </div>`;
-    } else {
-      const res = await api('/query', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question, mode, engine }),
-      });
-      const title = ({graphrag:'GraphRAG', vector_rag:'Vector RAG', hybrid_rag:'BM25 + Vector'})[res.engine_used] || 'GraphRAG';
-      const badge = res.engine_used === 'graphrag' ? 'emerald' : 'vector';
-      resultsEl.innerHTML = `<div class="card">${renderAnswer(title, badge, res)}</div>`;
-    }
-  } catch (e) {
-    resultsEl.innerHTML = `<p class="error-text">${escapeHtml(e.message)}</p>`;
-  }
+function routingCard(r, engine) {
+  if (!r) return `<div class="card reveal"><div class="card-title"><h3>Engine</h3></div>
+    <p class="note" style="margin:0">Forced to <b>${esc(META[engine]?.long || engine)}</b>. Switch to <b>Auto</b> to see the router decide.</p></div>`;
+  const pr = r.predicted_rewards;
+  const max = pr ? Math.max(...Object.values(pr)) : 0;
+  const bars = pr ? ENGINES.slice().sort((a, b) => pr[b] - pr[a]).map((e, i) => `
+    <div class="reward-row ${e === r.engine ? 'win' : ''}">
+      <span style="display:flex;align-items:center;gap:7px"><i class="swatch" style="background:${META[e].color}"></i>${META[e].name}</span>
+      <div class="bar"><span style="width:${Math.max(2, (pr[e] / Math.max(max, 1e-9)) * 100)}%;background:${META[e].color};animation-delay:${i * .1}s"></span></div>
+      <span class="v">${(+pr[e]).toFixed(3)}</span>
+    </div>`).join('') : '';
+  return `<div class="card reveal">
+    <div class="card-title"><h3>Routing decision</h3><span class="hint">${esc(r.source === 'bandit' ? 'learned policy' : r.source === 'empty' ? 'no corpus' : 'fallback rule')}</span></div>
+    ${routeSVG({ rewards: pr, chosen: r.engine, compact: true })}
+    ${bars ? `<div style="margin-top:6px">${bars}</div>` : ''}
+    <p class="why">${r.category ? `Classified as <b>${esc(CAT_LABEL[r.category] || r.category)}</b>. ` : ''}Sent to <b>${esc(META[r.engine]?.long || r.engine)}</b>${pr ? ', the highest predicted reward' : ''}.${r.source !== 'bandit' ? ' ' + esc(r.reason || '') : ''}</p>
+  </div>`;
 }
 
-/* ---------------- communities tab ---------------- */
-
-async function renderCommunitiesTab() {
-  const container = document.getElementById('tab-communities');
-  if (!state.status || !state.status.ingested) {
-    container.innerHTML = emptyState('No communities yet', 'Ingest documents from the sidebar first.');
-    return;
-  }
-  container.innerHTML = `<div class="panel-header"><h2>Communities</h2><p>Clusters of related entities, each with an LLM-generated summary — this is what powers "global search" answers.</p></div><div id="community-grid" class="community-grid"><p class="dim-text"><span class="spinner"></span> Loading…</p></div>`;
-  try {
-    const summaries = await api('/communities');
-    const gridEl = document.getElementById('community-grid');
-    if (summaries.length === 0) {
-      gridEl.innerHTML = `<p class="dim-text">No multi-entity communities were found (try ingesting more documents).</p>`;
-      return;
-    }
-    gridEl.innerHTML = summaries.map(s => `
-      <div class="card community-card">
-        <h3>${escapeHtml(s.title)}</h3>
-        <p>${escapeHtml(s.summary)}</p>
-        <div class="community-members">${s.members.slice(0,10).map(m => `<span class="pill">${escapeHtml(m)}</span>`).join('')}</div>
+function renderAnswer(r) {
+  const eng = r.engine_used;
+  const { num, html } = formatAnswer(r.answer, r.citations, 'single');
+  $('#results').innerHTML = `<div class="res-grid">
+    <div class="card reveal">
+      <div class="answer-head">
+        <span class="engine-tag"><i class="swatch" style="background:${META[eng]?.color}"></i>${esc(META[eng]?.long || eng)}</span>
+        <span class="engine-tag">${esc(r.mode_used)} mode</span>
+        <span class="spacer"></span>
+        <button class="btn sm" type="button" id="copy-ans">Copy</button>
       </div>
-    `).join('');
-  } catch (e) {
-    document.getElementById('community-grid').innerHTML = `<p class="error-text">${escapeHtml(e.message)}</p>`;
-  }
+      ${num}<div class="answer">${html}</div>
+      ${sourcesHTML(r.citations, 'single')}
+    </div>
+    <div class="side">${routingCard(r.routing, eng)}${telemetryCard(r.metrics, r.quality)}</div>
+  </div>`;
+  $('#copy-ans').onclick = () => navigator.clipboard?.writeText(r.answer).then(() => toast('Answer copied'));
+  observeReveals($('#results'));
 }
 
-/* ---------------- benchmark tab ---------------- */
+function renderCompare(r) {
+  const resp = { graphrag: r.graphrag, vector_rag: r.vector_rag, hybrid_rag: r.hybrid_rag };
+  const vals = k => ENGINES.map(e => resp[e]?.metrics?.[k]).filter(v => v != null);
+  const best = { latency_ms: Math.min(...vals('latency_ms')), total_tokens: Math.min(...vals('total_tokens')), cost_usd: Math.min(...vals('cost_usd')) };
+  const cols = ENGINES.map((e, idx) => {
+    const x = resp[e]; if (!x) return '';
+    const m = x.metrics || {}, q = x.quality || {};
+    const { num, html } = formatAnswer(x.answer, x.citations, e);
+    const b = k => m[k] != null && m[k] === best[k] && vals(k).length > 1 ? '<span class="best">best</span>' : '';
+    return `<div class="card reveal" style="transition-delay:${idx * .08}s">
+      <div class="answer-head"><span class="engine-tag"><i class="swatch" style="background:${META[e].color}"></i>${META[e].long}</span>
+        <span class="spacer"></span>${q.abstained ? '<span class="flag warn">abstained</span>' : ''}</div>
+      <div class="cmp-metrics">
+        <div><div class="k">latency ${b('latency_ms')}</div><div class="v">${fmt.ms(m.latency_ms)}</div></div>
+        <div><div class="k">tokens ${b('total_tokens')}</div><div class="v">${fmt.int(m.total_tokens)}</div></div>
+        <div data-tip="${esc(m.cost_basis || '')}"><div class="k">cost ${b('cost_usd')}</div><div class="v">${fmt.usd(m.cost_usd)}</div></div>
+      </div>
+      ${num}<div class="answer">${html}</div>
+      ${sourcesHTML(x.citations, e)}
+    </div>`;
+  }).join('');
+  const lat = ENGINES.map(e => [e, resp[e]?.metrics?.latency_ms || 0]);
+  const maxLat = Math.max(...lat.map(l => l[1]), 1);
+  $('#results').innerHTML = `
+    <div class="card reveal"><div class="card-title"><h3>Head to head</h3><span class="hint">same question, all three engines</span></div>
+      ${lat.map(([e, v], i) => `<div class="hbar"><span style="display:flex;gap:7px;align-items:center"><i class="swatch" style="background:${META[e].color}"></i>${META[e].name}</span>
+        <div class="track"><span style="width:${v / maxLat * 100}%;background:${META[e].color};animation-delay:${i * .1}s"></span></div>
+        <span class="v">${fmt.ms(v)} · ${fmt.pct(resp[e]?.quality?.citation_coverage)} cited</span></div>`).join('')}
+    </div>
+    <div class="cmp">${cols}</div>`;
+  observeReveals($('#results'));
+}
 
-async function renderBenchmarkTab() {
-  const container = document.getElementById('tab-benchmark');
-  if (!state.status || !state.status.ingested) {
-    container.innerHTML = emptyState('Nothing to benchmark yet', 'Ingest documents from the sidebar first.');
+/* ───────────── Ingest ───────────── */
+function limits() {
+  const l = state.status?.upload_limits || { max_files: 5, max_mb: 10, extensions: ['.pdf', '.txt', '.md'] };
+  return l;
+}
+function renderLimits() {
+  const l = limits();
+  $('#limits').innerHTML = `<span>${l.extensions.join(' · ')}</span><span>max ${l.max_files} files</span><span>${l.max_mb} MB each</span>`;
+  $('#file-input').accept = l.extensions.join(',');
+}
+function validateFile(f) {
+  const l = limits(), ext = '.' + (f.name.split('.').pop() || '').toLowerCase();
+  if (!l.extensions.includes(ext)) return `Unsupported type. Use ${l.extensions.join(', ')}`;
+  if (f.size > l.max_mb * 1048576) return `Exceeds ${l.max_mb} MB`;
+  if (f.size === 0) return 'File is empty';
+  return null;
+}
+function addFiles(list) {
+  const l = limits();
+  for (const f of list) {
+    if (state.files.some(x => x.file.name === f.name && x.file.size === f.size)) continue;
+    if (state.files.length >= l.max_files) { toast(`At most ${l.max_files} files per upload`, true); break; }
+    state.files.push({ file: f, error: validateFile(f) });
+  }
+  renderFiles();
+}
+function renderFiles() {
+  $('#files').innerHTML = state.files.map((x, i) => `<li class="file ${x.error ? 'bad' : ''}">
+    <span class="ext">${esc(x.file.name.split('.').pop())}</span>
+    <div style="min-width:0"><div class="name">${esc(x.file.name)}</div>${x.error ? `<div class="err">${esc(x.error)}</div>` : ''}</div>
+    <span class="size">${fmt.bytes(x.file.size)}</span>
+    <button type="button" data-i="${i}" aria-label="Remove ${esc(x.file.name)}"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+  </li>`).join('');
+  const ok = state.files.length && state.files.every(x => !x.error);
+  $('#ingest-btn').disabled = !ok || !!state.job;
+  $('#ingest-btn').textContent = state.files.length ? `Ingest ${state.files.length} file${state.files.length > 1 ? 's' : ''}` : 'Ingest files';
+}
+$('#files').addEventListener('click', e => { const b = e.target.closest('button[data-i]'); if (b) { state.files.splice(+b.dataset.i, 1); renderFiles(); } });
+const drop = $('#drop');
+drop.addEventListener('click', () => $('#file-input').click());
+drop.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); $('#file-input').click(); } });
+$('#file-input').addEventListener('change', e => { addFiles(e.target.files); e.target.value = ''; });
+['dragenter', 'dragover'].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.add('over'); }));
+['dragleave', 'drop'].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.remove('over'); }));
+drop.addEventListener('drop', e => addFiles(e.dataTransfer.files));
+$('#mode-seg').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  state.mode = b.dataset.mode; $$('#mode-seg button').forEach(x => x.setAttribute('aria-pressed', x === b));
+});
+$('#ingest-btn').addEventListener('click', async () => {
+  if (state.mode === 'replace' && !confirm('Replace the whole corpus with these files? Existing documents will be removed.')) return;
+  const form = new FormData();
+  state.files.forEach(x => form.append('files', x.file));
+  form.append('mode', state.mode);
+  try {
+    $('#ingest-btn').disabled = true;
+    const job = await api('/ingest/upload', { method: 'POST', body: form });
+    state.files = []; renderFiles(); pollJob(job.id);
+  } catch (err) { toast(err.message, true); renderFiles(); }
+});
+$('#sample-btn').addEventListener('click', async () => {
+  if (!confirm('Replace the current corpus with the bundled sample earnings releases?')) return;
+  try { const job = await api('/ingest/sample', { method: 'POST' }); pollJob(job.id); }
+  catch (err) { toast(err.message, true); }
+});
+
+async function pollJob(id) {
+  state.job = id; renderFiles();
+  const t0 = Date.now();
+  while (state.job === id) {
+    let j;
+    try { j = await api('/ingest/jobs/' + id); } catch (err) { renderJob({ status: 'error', error: err.message }); break; }
+    renderJob(j, t0);
+    if (j.status === 'done') { toast('Ingestion complete'); loadStatus(); loadTelemetry(); break; }
+    if (j.status === 'error') { toast(j.error || 'Ingestion failed', true); break; }
+    await new Promise(r => setTimeout(r, 2500));
+  }
+  state.job = null; renderFiles();
+}
+
+function renderJob(j, t0) {
+  const p = j.progress || { done: 0, total: 0 };
+  const frac = p.total ? p.done / p.total : 0;
+  const el = $('#job');
+  if (j.status === 'done') {
+    const r = j.result || {}, m = r.metrics || {}, pd = m.per_document || {};
+    el.innerHTML = `<div class="card" style="margin-top:16px;box-shadow:none">
+      <div class="card-title"><h3>Ingested</h3><span class="flag good">done</span></div>
+      <div class="kv" style="margin-top:0">
+        <div><div class="k">documents</div><div class="v">${(r.doc_ids || []).length}</div></div>
+        <div><div class="k">chunks</div><div class="v">${fmt.int(r.num_chunks)}</div></div>
+        <div><div class="k">triples</div><div class="v">${fmt.int(r.num_triples)}</div></div>
+        <div><div class="k">time / doc</div><div class="v">${fmt.ms(pd.latency_ms)}</div></div>
+        <div><div class="k">tokens / doc</div><div class="v">${fmt.int(pd.tokens)}</div></div>
+        <div data-tip="${esc(m.cost_basis || '')}"><div class="k">cost / doc</div><div class="v">${fmt.usd(pd.cost_usd)}</div></div>
+      </div>
+      <p class="note">Most of this cost is LLM entity extraction for the graph engine. Vector and BM25 indexing are nearly free by comparison.</p></div>`;
     return;
   }
-  container.innerHTML = `
-    <div class="panel-header">
-      <h2>Benchmark</h2>
-      <p>Runs the same fixed question set against GraphRAG, vector RAG, and BM25 + vector retrieval, then scores each answer 0–5 against a reference answer using an LLM judge.</p>
-    </div>
-    <button class="btn primary" id="run-bench-btn">Run benchmark</button>
-    <div id="bench-results" style="margin-top:22px;"></div>
-  `;
-  document.getElementById('run-bench-btn').onclick = runBenchmark;
-  try {
-    const existing = await api('/benchmark/results');
-    if (existing.results && existing.results.length) renderBenchResults(existing);
-  } catch (e) {}
+  if (j.status === 'error') {
+    el.innerHTML = `<div class="card" style="margin-top:16px;box-shadow:none"><span class="flag bad">failed</span><p style="margin:10px 0 0">${esc(j.error)}</p></div>`;
+    return;
+  }
+  const secs = t0 ? Math.round((Date.now() - t0) / 1000) : 0;
+  el.innerHTML = `<div class="card" style="margin-top:16px;box-shadow:none">
+    <div class="card-title"><h3>${j.status === 'queued' ? 'Queued' : 'Ingesting'}</h3><span class="hint mono">${secs}s elapsed</span></div>
+    <div class="progress ${p.done === 0 ? 'indet' : ''}"><span style="width:${Math.max(4, frac * 100)}%"></span></div>
+    <div class="legend"><span class="mono">${p.done}/${p.total} documents</span><span class="muted">${esc(p.current || (j.jobs_ahead ? `${j.jobs_ahead} job(s) ahead` : 'starting'))}</span></div>
+    <p class="note">Graph extraction runs the LLM over every chunk. On a local 14B model, expect a few minutes per document. You can keep using the app while this runs.</p></div>`;
 }
 
-function renderBenchResults(summary) {
-  const resultsEl = document.getElementById('bench-results');
-  const catBars = {};
-  summary.results.forEach(r => {
-    catBars[r.category] = catBars[r.category] || { g: [], v: [], h: [] };
-    catBars[r.category].g.push(r.graphrag_score);
-    catBars[r.category].v.push(r.vector_rag_score);
-    if (r.hybrid_rag_score != null) catBars[r.category].h.push(r.hybrid_rag_score);
-  });
-  const avg = arr => arr.reduce((a,b)=>a+b,0) / arr.length;
-
-  resultsEl.innerHTML = `
-    <div class="bench-summary">
-      <div class="bench-score graphrag"><div class="num">${summary.graphrag_avg.toFixed(2)}</div><div class="label">GraphRAG avg / 5</div></div>
-      <div class="bench-score vector"><div class="num">${summary.vector_rag_avg.toFixed(2)}</div><div class="label">Vector RAG avg / 5</div></div>
-      ${summary.hybrid_rag_avg != null ? `<div class="bench-score vector"><div class="num">${summary.hybrid_rag_avg.toFixed(2)}</div><div class="label">BM25 + Vector avg / 5</div></div>` : ''}
-    </div>
-    ${summary.failed_questions?.length ? `<p class="error-text">${summary.failed_questions.length} questions failed and were excluded from averages.</p>` : ''}
-    <div class="card" style="margin-bottom:22px;">
-      ${Object.entries(catBars).map(([cat, v]) => `
-        <div class="bar-row">
-          <span class="cat-tag" style="width:90px;">${escapeHtml(cat)}</span>
-          <div class="bar-track"><div class="bar-fill graphrag" style="width:${avg(v.g)/5*100}%"></div></div>
-          <span style="width:30px;">${avg(v.g).toFixed(1)}</span>
-          <div class="bar-track"><div class="bar-fill vector" style="width:${avg(v.v)/5*100}%"></div></div>
-          <span style="width:30px;">${avg(v.v).toFixed(1)}</span>
-          ${v.h.length ? `<span class="small">BM25+Vector: ${avg(v.h).toFixed(1)}</span>` : ''}
-        </div>
-      `).join('')}
-    </div>
-    <table class="bench-table">
-      <thead><tr><th>Question</th><th>Category</th><th>GraphRAG</th><th>Vector RAG</th><th>BM25 + Vector</th><th>Judge notes</th></tr></thead>
-      <tbody>
-        ${summary.results.map(r => `
-          <tr>
-            <td>${escapeHtml(r.question)}</td>
-            <td><span class="cat-tag">${escapeHtml(r.category)}</span></td>
-            <td style="color:var(--graph);font-weight:600;">${r.graphrag_score}</td>
-            <td style="color:var(--vector);font-weight:600;">${r.vector_rag_score}</td>
-            <td>${r.hybrid_rag_score == null ? '-' : r.hybrid_rag_score}</td>
-            <td class="dim-text">${escapeHtml(r.judge_rationale)}</td>
-          </tr>
-        `).join('')}
-      </tbody>
-    </table>
-  `;
-}
-
-async function runBenchmark() {
-  const btn = document.getElementById('run-bench-btn');
-  btn.disabled = true;
-  btn.innerHTML = '<span class="spinner"></span> Running benchmark (calls the configured answer and judge models, may take a while)…';
-  const resultsEl = document.getElementById('bench-results');
-  resultsEl.innerHTML = '';
+/* ───────────── Benchmarks ───────────── */
+async function loadBenchmarks() {
   try {
-    const summary = await api('/benchmark/run', { method: 'POST' });
-    renderBenchResults(summary);
+    state.rl = await api('/rl/results');
   } catch (e) {
-    resultsEl.innerHTML = `<p class="error-text">${escapeHtml(e.message)}</p>`;
-  } finally {
-    btn.disabled = false;
-    btn.textContent = 'Run benchmark again';
+    $('#bench').innerHTML = `<div class="card span-12 empty">Benchmark results unavailable: ${esc(e.message)}</div>`; return;
+  }
+  const sp = state.rl.splits;
+  $$('#split-tabs button').forEach(b => {
+    const s = sp[b.dataset.split]?.summary;
+    b.disabled = !s;
+    b.querySelector('small').textContent = s ? `n=${s.completed}` : 'pending';
+  });
+  state.split = ['test', 'dev', 'train'].find(s => sp[s]?.summary) || null;
+  heroStats();
+  renderBench();
+}
+$('#split-tabs').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b || b.disabled) return;
+  state.split = b.dataset.split; renderBench();
+});
+
+function policiesFor(split) {
+  const { summary, analysis } = state.rl.splits[split] || {};
+  if (analysis?.policies) {
+    return Object.fromEntries(Object.entries(analysis.policies).map(([k, v]) => [k.replace('always_', ''), v]));
+  }
+  const m = summary?.mean_normalized_judge_rewards || {};
+  const out = {};
+  ['graphrag', 'vector_rag', 'hybrid_rag', 'router', 'oracle'].forEach(k => { if (m[k] != null) out[k] = { mean: m[k], ci95: null, n: summary.completed }; });
+  return out;
+}
+
+function heroStats() {
+  const sp = state.rl.splits;
+  const total = ['train', 'dev', 'test'].reduce((a, s) => a + (sp[s]?.summary?.completed || 0), 0);
+  if (total) countUp($('#hs-q'), total);
+  const held = ['test', 'dev'].find(s => policiesFor(s).router) || null;
+  const pol = held ? policiesFor(held) : state.split ? policiesFor(state.split) : {};
+  const best = ENGINES.reduce((b, e) => pol[e] && (!b || pol[e].mean > pol[b].mean) ? e : b, null);
+  if (pol.router) { countUp($('#hs-router'), pol.router.mean, 2); $('#hs-router-k').textContent = `router reward · ${held}`; }
+  else if (best) { countUp($('#hs-router'), pol[best].mean, 2); $('#hs-router-k').textContent = `best engine (${META[best].name}) · ${state.split}`; }
+  if (pol.oracle) countUp($('#hs-oracle'), pol.oracle.mean, 2);
+  else {
+    const a = state.rl.splits[state.split]?.analysis;
+    if (a?.policies?.oracle) countUp($('#hs-oracle'), a.policies.oracle.mean, 2);
   }
 }
 
-/* ---------------- boot ---------------- */
+function renderBench() {
+  $$('#split-tabs button').forEach(b => b.setAttribute('aria-selected', b.dataset.split === state.split));
+  const host = $('#bench');
+  if (!state.split) { host.innerHTML = `<div class="card span-12 empty">No benchmark runs found yet. Run <span class="mono">scripts/run-local-flow.ps1</span>.</div>`; return; }
+  const { summary, analysis } = state.rl.splits[state.split];
+  const pol = policiesFor(state.split);
+  const hasRouter = !!pol.router;
+  const best = ENGINES.reduce((b, e) => pol[e] && (!b || pol[e].mean > pol[b].mean) ? e : b, null);
+  host.innerHTML = [
+    headlineCard(pol, best, hasRouter, analysis),
+    policyChart(pol, best),
+    heatmapCard(summary, hasRouter),
+    routerCard(analysis, hasRouter),
+    reliabilityCard(analysis),
+    findingsCard(analysis, pol, best, hasRouter),
+  ].join('');
+  observeReveals(host);
+  host.querySelectorAll('.reveal').forEach((el, i) => el.style.transitionDelay = `${i * 0.06}s`);
+}
 
-refreshStatus();
-setInterval(() => { if (!state.ingesting) refreshStatus(); }, 15000);
+function headlineCard(pol, best, hasRouter, analysis) {
+  const r = pol.router, b = best && pol[best], o = pol.oracle;
+  let claim;
+  if (hasRouter && b) {
+    const d = r.mean - b.mean;
+    const sig = analysis?.router?.vs_engines?.[best];
+    claim = d > 0.005
+      ? `The router beats always-<em>${META[best].name}</em> by <em>${d.toFixed(3)}</em>${sig ? (sig.significant ? ', a significant gain.' : '. Not significant at n=' + r.n + '.') : '.'}`
+      : `The router <em>matches</em> the best single engine (${META[best].name}). Routing headroom on this data is small.`;
+  } else if (b) {
+    claim = `On train, <em>${META[best].name}</em> leads. The router is fit on these rewards and evaluated on held-out dev and test.`;
+  } else claim = 'No results yet.';
+  const metric = (k, v, label, color) => `<div class="metric"><div class="k"><i class="swatch" style="background:${color}"></i>${label}</div>
+    <div class="v">${v ? (+v.mean).toFixed(3) : '–'}</div><div class="ci">${v?.ci95 ? `95% CI ${v.ci95[0].toFixed(2)} – ${v.ci95[1].toFixed(2)}` : v ? `n = ${v.n ?? '–'}` : ''}</div></div>`;
+  return `<div class="card headline span-12 reveal">
+    <div><span class="num">${state.split.toUpperCase()} SPLIT · ${(analysis?.n ?? state.rl.splits[state.split].summary?.completed) || 0} QUESTIONS</span><p class="claim">${claim}</p></div>
+    ${metric('router', r, hasRouter ? 'Adaptive router' : 'Router (n/a on train)', 'var(--s-router)')}
+    ${metric(best, b, b ? `Best single · ${META[best].name}` : 'Best single', b ? META[best].color : 'var(--s-neutral)')}
+    ${metric('oracle', o, 'Oracle ceiling', 'var(--s-neutral)')}
+  </div>`;
+}
+
+function policyChart(pol, best) {
+  const order = ['graphrag', 'vector_rag', 'hybrid_rag', 'random', 'router', 'oracle'].filter(k => pol[k]);
+  const rows = order.map((k, i) => {
+    const v = pol[k], ci = v.ci95;
+    const tip = `${META[k].long}<br>mean ${(+v.mean).toFixed(3)}${ci ? `<br>95% CI ${ci[0].toFixed(3)} – ${ci[1].toFixed(3)}` : ''}<br>n = ${v.n ?? '–'}`;
+    return `<div class="prow ${k === 'router' ? 'hero-row' : ''}" data-tip="${tip}">
+      <span class="name"><i class="swatch" style="background:${META[k].color}"></i>${META[k].name}${k === best ? ' <span class="best">best engine</span>' : ''}</span>
+      <div class="track">
+        <span class="fill ${k === 'oracle' ? 'hatch' : ''}" style="width:${v.mean * 100}%;background-color:${META[k].color};animation-delay:${i * .07}s"></span>
+        ${ci ? `<span class="ci-line" style="left:${ci[0] * 100}%;width:${(ci[1] - ci[0]) * 100}%"></span>` : ''}
+      </div>
+      <span class="val">${(+v.mean).toFixed(3)}${ci ? `<small>[${ci[0].toFixed(2)}, ${ci[1].toFixed(2)}]</small>` : ''}</span>
+    </div>`;
+  }).join('');
+  const table = `<details class="table-view"><summary>view as table</summary><div class="tbl-wrap"><table class="tbl"><thead><tr><th>policy</th><th>mean</th><th>95% CI</th><th>n</th></tr></thead><tbody>
+    ${order.map(k => `<tr><td>${META[k].long}</td><td class="r">${(+pol[k].mean).toFixed(4)}</td><td class="r">${pol[k].ci95 ? pol[k].ci95.join(' – ') : '–'}</td><td class="r">${pol[k].n ?? '–'}</td></tr>`).join('')}
+  </tbody></table></div></details>`;
+  return `<div class="card span-7 reveal">
+    <div class="card-title"><h3>Mean reward by policy</h3><span class="hint">normalized 0–1 · whiskers = 95% CI</span></div>
+    <div class="pchart">${rows}</div>
+    <div class="axis"><span></span><div class="ticks">${[0, .25, .5, .75, 1].map(t => `<span style="left:${t * 100}%">${t}</span>`).join('')}</div><span></span></div>
+    ${table}
+  </div>`;
+}
+
+function heatmapCard(summary, hasRouter) {
+  if (!summary) return '';
+  const cols = [...ENGINES, ...(hasRouter ? ['router'] : [])];
+  const rows = [
+    ...CATS.map(c => [c, summary.by_benchmark_category?.[c]]),
+    ['numeric', summary.by_task?.numeric],
+  ].filter(([, v]) => v && v.completed);
+  const val = (v, k) => k === 'router' ? v.router_reward : v.engine_rewards?.[k];
+  const body = rows.map(([c, v]) => {
+    const vals = cols.map(k => val(v, k));
+    const top = Math.max(...vals.filter(x => x != null));
+    return `<tr><td>${CAT_LABEL[c]}<span class="n">n=${v.completed}</span></td>${cols.map((k, i) => {
+      const x = vals[i];
+      if (x == null) return '<td>–</td>';
+      const a = 0.06 + x * 0.8;
+      const dark = x > 0.65;
+      return `<td class="${x === top ? 'top' : ''}" style="background:color-mix(in srgb, var(--accent) ${Math.round(a * 100)}%, transparent);color:${dark ? 'var(--on-accent)' : 'var(--ink)'}" data-tip="${CAT_LABEL[c]} · ${META[k].long}<br>reward ${x.toFixed(3)} · n=${v.completed}">${x.toFixed(2)}</td>`;
+    }).join('')}</tr>`;
+  }).join('');
+  return `<div class="card span-5 reveal">
+    <div class="card-title"><h3>Reward by question type</h3><span class="hint">▲ best in row</span></div>
+    <table class="heat"><thead><tr><th>category</th>${cols.map(k => `<th><i class="swatch" style="background:${META[k].color};display:inline-block;margin-right:5px"></i>${META[k].name}</th>`).join('')}</tr></thead><tbody>${body}</tbody></table>
+    <p class="note">Categories cover text questions scored by the blinded judge. Numeric questions use exact scalar matching.</p>
+  </div>`;
+}
+
+function routerCard(a, hasRouter) {
+  if (!a) return `<div class="card span-6 reveal"><div class="card-title"><h3>Routing behaviour</h3></div>
+    <p class="empty">Run <span class="mono">python RL/analyze_results.py --split ${state.split}</span> for CIs, routing shares and retrieval metrics.</p></div>`;
+  const wins = a.outright_wins || {};
+  const winTotal = Object.values(wins).reduce((x, y) => x + y, 0) || 1;
+  const winBar = `<div class="stack" role="img" aria-label="Outright wins per engine">${[...ENGINES, 'tie'].filter(k => wins[k]).map((k, i) =>
+      `<span style="flex:${wins[k]};background:${k === 'tie' ? 'var(--s-neutral)' : META[k].color};animation-delay:${i * .08}s" data-tip="${k === 'tie' ? 'Tie (2+ engines equal)' : META[k].long}<br>${wins[k]} questions · ${fmt.pct(wins[k] / winTotal)}">${wins[k] / winTotal > .08 ? wins[k] : ''}</span>`).join('')}</div>
+    <div class="legend">${[...ENGINES, 'tie'].filter(k => wins[k]).map(k => `<span><i class="swatch" style="background:${k === 'tie' ? 'var(--s-neutral)' : META[k].color}"></i>${k === 'tie' ? 'tie' : META[k].name} <span class="mono">${wins[k]}</span></span>`).join('')}</div>`;
+  let routed = '';
+  if (hasRouter && a.router) {
+    const sh = a.router.selection_share;
+    routed = `<div style="margin-top:22px"><div class="card-title" style="margin-bottom:6px"><h3>Router picks</h3><span class="hint">optimal ${fmt.pct(a.router.optimal_pick_rate)} · regret ${a.router.mean_regret_vs_oracle.toFixed(3)}</span></div>
+      <div class="stack">${ENGINES.filter(e => sh[e]).map((e, i) => `<span style="flex:${sh[e]};background:${META[e].color};animation-delay:${i * .08}s" data-tip="${META[e].long}<br>${fmt.pct(sh[e])} of questions">${sh[e] > .08 ? fmt.pct(sh[e]) : ''}</span>`).join('')}</div>
+      <div class="legend">${ENGINES.map(e => `<span><i class="swatch" style="background:${META[e].color}"></i>${META[e].name} <span class="mono">${fmt.pct(sh[e] || 0)}</span></span>`).join('')}</div></div>`;
+  }
+  return `<div class="card span-6 reveal">
+    <div class="card-title"><h3>Who wins each question</h3><span class="hint">strict best reward</span></div>
+    ${winBar}
+    <p class="note">Ties are common: when engines answer equally well, routing can't add reward. This is the real ceiling on a router's gain.</p>
+    ${routed}
+  </div>`;
+}
+
+function reliabilityCard(a) {
+  if (!a) return '';
+  const rows = [
+    ['doc hit rate', e => a.retrieval?.[e]?.doc_hit_rate, 'Gold evidence document appears in retrieved sources'],
+    ['doc MRR', e => a.retrieval?.[e]?.doc_mrr, 'Mean reciprocal rank of the first gold document'],
+    ['abstention', e => a.abstention_rate?.[e], 'Share of answers that decline (insufficient evidence)'],
+  ];
+  return `<div class="card span-6 reveal">
+    <div class="card-title"><h3>Retrieval &amp; reliability</h3><span class="hint">per engine</span></div>
+    <div class="mrow head"><span>metric</span>${ENGINES.map(e => `<span><i class="swatch" style="background:${META[e].color};display:inline-block;margin-right:5px"></i>${META[e].name}</span>`).join('')}</div>
+    ${rows.map(([k, f, tip]) => `<div class="mrow"><span data-tip="${tip}">${k}</span>${ENGINES.map(e => {
+      const v = f(e);
+      return `<div class="mcell" style="--c:${META[e].color}"><span class="v">${v == null ? '–' : k === 'doc MRR' ? v.toFixed(3) : fmt.pct(v)}</span><div class="meter"><span style="width:${(v || 0) * 100}%"></span></div></div>`;
+    }).join('')}</div>`).join('')}
+  </div>`;
+}
+
+function findingsCard(a, pol, best, hasRouter) {
+  if (!a) return '';
+  const facts = [];
+  const cmp = hasRouter ? a.router?.vs_engines : a.engine_vs_best;
+  if (cmp) Object.entries(cmp).forEach(([e, d]) => {
+    if (!d) return;
+    const who = hasRouter ? `Router vs ${META[e].name}` : `${META[e].name} vs ${META[best].name}`;
+    facts.push(`<div class="fact"><span class="tag ${d.significant ? 'sig' : 'ns'}">${d.significant ? 'significant' : 'not significant'}</span>
+      <span><b>${who}</b>: ${d.mean_diff >= 0 ? '+' : ''}${d.mean_diff.toFixed(3)} mean reward, 95% CI [${d.ci95[0].toFixed(3)}, ${d.ci95[1].toFixed(3)}], better in ${fmt.pct(d.p_better)} of bootstrap resamples.</span></div>`);
+  });
+  const ab = a.abstention_rate || {}, rt = a.retrieval || {};
+  if (ab.graphrag != null && rt.graphrag) {
+    facts.push(`<div class="fact"><span class="tag">insight</span><span><b>Why graph retrieval trails:</b> it finds the gold document in ${fmt.pct(rt.graphrag.doc_hit_rate)} of questions (vs ${fmt.pct(rt.hybrid_rag?.doc_hit_rate)} for hybrid) and abstains ${fmt.pct(ab.graphrag)} of the time. Entity-level summaries lose the exact table figures that FinQA questions need.</span></div>`);
+  }
+  if (pol.oracle && best) facts.push(`<div class="fact"><span class="tag">headroom</span><span>A perfect per-question router would reach <b>${pol.oracle.mean.toFixed(3)}</b>, ${(pol.oracle.mean - pol[best].mean).toFixed(3)} above always-${META[best].name}. That's the most any router could add on this split.</span></div>`);
+  return `<div class="card span-12 reveal"><div class="card-title"><h3>What the numbers say</h3><span class="hint">paired bootstrap, 10k resamples</span></div><div class="facts">${facts.join('')}</div></div>`;
+}
+
+/* ───────────── Telemetry ───────────── */
+$('#window-seg').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  state.windowMin = +b.dataset.w; $$('#window-seg button').forEach(x => x.setAttribute('aria-pressed', x === b)); loadTelemetry();
+});
+
+async function loadTelemetry() {
+  let s, recent;
+  try { [s, recent] = await Promise.all([api('/metrics?window_minutes=' + state.windowMin), api('/metrics/recent?limit=12')]); }
+  catch { $('#tele').innerHTML = `<div class="card empty">Telemetry unavailable.</div>`; return; }
+  $('#tele-updated').textContent = 'updated ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  if (!s.requests) {
+    $('#tele').innerHTML = `<div class="card empty">No traffic in this window yet. Ask a question above and the trace shows up here.</div>`; return;
+  }
+  const L = s.latency_ms, T = s.throughput, Q = s.quality;
+  const kpi = (k, v, u, sub, tip = '') => `<div class="card kpi reveal" ${tip ? `data-tip="${tip}"` : ''}><div class="k">${k}</div><div class="v">${v}${u ? `<small>${u}</small>` : ''}</div><div class="sub">${sub}</div></div>`;
+  const split = v => { const t = fmt.ms(v); const m = /^([\d.,]+)(\D+)$/.exec(t); return m ? [m[1], m[2]] : [t, '']; };
+  const [p50, p50u] = split(L.p50), [p95, p95u] = split(L.p95);
+  const stages = Object.entries(s.stage_latency_ms || {}).filter(([k]) => k !== 'engine' && k !== 'ingestion');
+  const maxStage = Math.max(...stages.map(([, v]) => v.p95 || 0), 1);
+  const engRows = Object.entries(s.engines || {});
+  const maxEng = Math.max(...engRows.map(([, v]) => v.requests), 1);
+  const stageColor = { routing: 'var(--s-router)', retrieval: 'var(--s-vector)', generation: 'var(--accent)' };
+  $('#tele').innerHTML = `
+    <div class="kpis">
+      ${kpi('Latency · p50', p50, p50u, `p95 ${fmt.ms(L.p95)} · p99 ${fmt.ms(L.p99)}`)}
+      ${kpi('Throughput', T.requests_per_min ?? '–', 'req/min', `${s.requests} requests · ${s.errors} errors`)}
+      ${kpi('Generation speed', T.output_tokens_per_s ?? '–', 'tok/s', `${fmt.int(s.tokens.total)} tokens total`)}
+      ${kpi('Est. cost', fmt.usd(s.cost_usd.total), '', `${fmt.usd(s.cost_usd.mean_per_request)} per request`, 'Self-hosted: GPU $/hr × LLM time. Hosted API: per-token price.')}
+      ${kpi('Tokens / request', fmt.int(s.tokens.mean_per_request), '', `${fmt.int(s.tokens.prompt)} in · ${fmt.int(s.tokens.completion)} out`)}
+      ${kpi('Error rate', fmt.pct(s.error_rate), '', `${s.errors} failed of ${s.requests}`)}
+      ${kpi('Citation coverage', fmt.pct(Q.mean_citation_coverage), '', 'retrieved docs cited inline', 'Groundedness proxy: share of retrieved documents the answer cites')}
+      ${kpi('Abstention', fmt.pct(Q.abstention_rate), '', 'answers declining for lack of evidence')}
+    </div>
+    <div class="tele-grid">
+      <div class="card reveal"><div class="card-title"><h3>Latency by stage</h3><span class="hint">bar = p50 · shade = p95</span></div>
+        ${stages.length ? stages.map(([k, v], i) => `<div class="hbar" data-tip="${k}<br>p50 ${fmt.ms(v.p50)} · p95 ${fmt.ms(v.p95)} · max ${fmt.ms(v.max)}">
+          <span>${k}</span><div class="track"><span class="p95" style="width:${v.p95 / maxStage * 100}%;background:${stageColor[k] || 'var(--s-neutral)'}"></span><span style="width:${v.p50 / maxStage * 100}%;background:${stageColor[k] || 'var(--s-neutral)'};animation-delay:${i * .08}s"></span></div>
+          <span class="v">${fmt.ms(v.p50)} / ${fmt.ms(v.p95)}</span></div>`).join('') : '<p class="empty">No stage data yet.</p>'}
+      </div>
+      <div class="card reveal"><div class="card-title"><h3>Engine traffic</h3><span class="hint">routed = chosen by the router</span></div>
+        ${engRows.length ? engRows.map(([e, v], i) => `<div class="hbar" data-tip="${META[e]?.long || e}<br>${v.requests} requests · ${fmt.pct(v.routed_share)} routed<br>p50 ${fmt.ms(v.latency_ms.p50)}">
+          <span style="display:flex;gap:7px;align-items:center"><i class="swatch" style="background:${META[e]?.color}"></i>${META[e]?.name || e}</span>
+          <div class="track"><span style="width:${v.requests / maxEng * 100}%;background:${META[e]?.color};animation-delay:${i * .08}s"></span></div>
+          <span class="v">${v.requests} · ${fmt.pct(v.routed_share)} routed</span></div>`).join('') : '<p class="empty">No engine traffic yet.</p>'}
+      </div>
+    </div>
+    <div class="card reveal" style="margin-top:18px"><div class="card-title"><h3>Recent requests</h3><span class="hint">latest ${recent.length}</span></div>
+      <div class="tbl-wrap"><table class="tbl"><thead><tr><th>time</th><th>endpoint</th><th>engine</th><th>latency</th><th>tokens</th><th>tok/s</th><th>cost</th><th>status</th></tr></thead><tbody>
+        ${recent.map(r => `<tr><td class="mono">${new Date(r.ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</td>
+          <td>${esc(r.endpoint)}</td>
+          <td>${r.engine ? `<span style="display:inline-flex;gap:6px;align-items:center"><i class="swatch" style="background:${META[r.engine]?.color || 'var(--s-neutral)'}"></i>${esc(META[r.engine]?.name || r.engine)}${r.routed ? ' <span class="muted">· routed</span>' : ''}</span>` : '<span class="muted">–</span>'}</td>
+          <td class="mono">${fmt.ms(r.latency_ms)}</td><td class="mono">${fmt.int((r.prompt_tokens || 0) + (r.completion_tokens || 0))}</td>
+          <td class="mono">${r.output_tokens_per_s ?? '–'}</td><td class="mono">${fmt.usd(r.cost_usd)}</td>
+          <td class="${r.status === 'ok' ? 'status-ok' : 'status-err'} mono">${esc(r.status)}</td></tr>`).join('')}
+      </tbody></table></div>
+    </div>`;
+  observeReveals($('#tele'));
+}
+
+/* ───────────── Boot ───────────── */
+renderLimits(); renderFiles();
+heroDemo(); loadStatus(); loadBenchmarks(); loadTelemetry();
+setInterval(() => { if (!document.hidden) loadTelemetry(); }, 15000);
+setInterval(() => { if (!document.hidden && !state.job) loadStatus(); }, 30000);
 </script>
 </body>
 </html>

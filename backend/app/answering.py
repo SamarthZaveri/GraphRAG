@@ -1,5 +1,5 @@
 """Shared answer instructions keep retrieval comparisons on the same rubric."""
-from . import config
+from . import config, telemetry
 from .llm_client import chat
 
 ANSWER_SYSTEM_PROMPT = """Answer financial-report questions using ONLY the supplied evidence.
@@ -24,6 +24,7 @@ Do not emit this line if evidence is insufficient. Do not put citations on this 
 
 
 def generate_answer(question: str, context: str) -> str:
-    return chat(config.ANSWER_MODEL, ANSWER_SYSTEM_PROMPT,
-                f"Evidence:\n{context}\n\nQuestion: {question}",
-                max_tokens=config.ANSWER_MAX_TOKENS, temperature=0.1)
+    with telemetry.span("generation"):
+        return chat(config.ANSWER_MODEL, ANSWER_SYSTEM_PROMPT,
+                    f"Evidence:\n{context}\n\nQuestion: {question}",
+                    max_tokens=config.ANSWER_MAX_TOKENS, temperature=0.1)

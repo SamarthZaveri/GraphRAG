@@ -52,3 +52,17 @@ HYBRID_CANDIDATES = 20
 HYBRID_TOP_K = 6
 RRF_K = 60
 RETRIEVAL_VERSION = "pure_graph_vector_bm25_rrf_v1"
+
+# Cost estimation for live metrics. Hosted APIs bill per token; self-hosted Ollama bills GPU time
+# (default: AWS g5.xlarge on-demand, enough for qwen2.5:14b Q4).
+PRICE_INPUT_PER_M = float(os.environ.get("LEDGER_PRICE_INPUT_PER_M", "0"))
+PRICE_OUTPUT_PER_M = float(os.environ.get("LEDGER_PRICE_OUTPUT_PER_M", "0"))
+GPU_HOURLY_USD = float(os.environ.get("LEDGER_GPU_HOURLY_USD", "1.006"))
+METRICS_DB_PATH = DATA_DIR / "metrics.sqlite3"
+RL_RESULTS_DIR = Path(os.environ.get("LEDGER_RL_RESULTS_DIR", str(BACKEND_ROOT.parent / "RL" / "data" / "local-14b"))).resolve()
+
+# Upload guardrails (the frontend reads these from /api/status).
+MAX_UPLOAD_FILES = int(os.environ.get("LEDGER_MAX_UPLOAD_FILES", "5"))
+MAX_UPLOAD_MB = float(os.environ.get("LEDGER_MAX_UPLOAD_MB", "10"))
+ALLOWED_UPLOAD_EXTENSIONS = (".pdf", ".txt", ".md")
+CORS_ORIGINS = [o.strip() for o in os.environ.get("LEDGER_CORS_ORIGINS", "*").split(",") if o.strip()]

@@ -40,6 +40,7 @@ class IngestResponse(BaseModel):
     num_entities: int
     num_triples: int
     num_communities: int
+    metrics: Optional[dict] = None  # extraction cost: latency, LLM calls, tokens, cost
 
 
 class QueryRequest(BaseModel):
@@ -62,6 +63,9 @@ class QueryResponse(BaseModel):
     answer: str
     citations: List[Citation] = []
     graph_path: Optional[List[str]] = None  # entity names touched, for local mode
+    routing: Optional[dict] = None  # router evidence when engine="auto" (category, predicted rewards)
+    metrics: Optional[dict] = None  # latency, stage timings, tokens, throughput, cost (telemetry.Trace.summary)
+    quality: Optional[dict] = None  # reference-free signals: citation coverage, abstention (telemetry.answer_quality)
 
 
 class CompareResponse(BaseModel):

@@ -1,9 +1,10 @@
 from __future__ import annotations
 import traceback
 from pathlib import Path
-from typing import List
+from typing import List, Optional
+import json
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import config
@@ -14,14 +15,15 @@ from .models import (
     IngestResponse, QueryRequest, QueryResponse, CompareResponse,
     BenchmarkSummary,
 )
-from . import query_engine, vector_baseline, benchmark, llm_client, rgcn, corpus_router, engines
+from . import vector_baseline, benchmark, llm_client, rgcn, corpus_router, engines, telemetry, metrics_store, jobs
+import re
 
-app = FastAPI(title="Ledger — GraphRAG for Financial Reports")
+app = FastAPI(title="Ledger — Adaptive RAG Router for Financial Reports")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=config.CORS_ORIGINS,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -35,7 +37,7 @@ def _read_text_file(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="ignore")
 
 
-def _ingest_documents(doc_paths: List[Path], mode: str = "replace") -> IngestResponse:
+def _ingest_documents(doc_paths: List[Path], mode: str = "replace", progress=None) -> IngestResponse:
     """mode="replace" wipes the existing graph/vector store and rebuilds from
     just doc_paths. mode="add" loads the existing store and merges doc_paths
     into it (skipping any doc_id already ingested, for idempotency), then
@@ -53,9 +55,11 @@ def _ingest_documents(doc_paths: List[Path], mode: str = "replace") -> IngestRes
 
     total_triples = 0
     doc_ids = []
-    for path in doc_paths:
+    for index, path in enumerate(doc_paths):
         doc_id = path.stem
         doc_ids.append(doc_id)
+        if progress:
+            progress(index, doc_id)
         if doc_id in already_ingested:
             continue  # already in the graph from a previous "add" — skip re-extraction
         text = _read_text_file(path)
@@ -69,6 +73,8 @@ def _ingest_documents(doc_paths: List[Path], mode: str = "replace") -> IngestRes
         vector_baseline.ingest_document(doc_id, text)
 
     store.save()
+    if progress:
+        progress(len(doc_paths), "building communities and router features")
 
     summaries = build_community_summaries(store)
     save_summaries(summaries)
@@ -90,6 +96,34 @@ def _ingest_documents(doc_paths: List[Path], mode: str = "replace") -> IngestRes
         num_triples=total_triples,
         num_communities=len(summaries),
     )
+
+
+def _traced_ingest(endpoint: str, paths: List[Path], mode: str, progress=None) -> IngestResponse:
+    """Ingest with extraction cost attached: this is the up-front price GraphRAG pays per document."""
+    with telemetry.trace() as t:
+        try:
+            with telemetry.span("ingestion"):
+                result = _ingest_documents(paths, mode=mode, progress=progress)
+        except Exception as e:
+            traceback.print_exc()
+            metrics_store.record(endpoint, "error", t.summary(), detail={"error": str(e)[:300], "docs": len(paths)})
+            raise RuntimeError(f"Ingestion failed: {e}") from e
+        result.metrics = t.summary()
+        new_docs = max(1, len(paths))
+        result.metrics["per_document"] = {
+            "latency_ms": round(result.metrics["latency_ms"] / new_docs, 1),
+            "tokens": round(result.metrics["total_tokens"] / new_docs, 1),
+            "cost_usd": round(result.metrics["cost_usd"] / new_docs, 6),
+        }
+        metrics_store.record(endpoint, "ok", result.metrics,
+                             detail={"docs": len(paths), "chunks": result.num_chunks, "triples": result.num_triples})
+        return result
+
+
+@app.get("/api/health")
+def health():
+    """Cheap liveness probe for load balancers; does not touch the graph or the LLM."""
+    return {"status": "ok", "retrieval_version": config.RETRIEVAL_VERSION}
 
 
 @app.get("/api/status")
@@ -126,41 +160,103 @@ def status():
         "rgcn_val_auc": rgcn_metrics.get("val_auc") if rgcn_metrics else None,
         "rgcn_used_semantic_init": rgcn_metrics.get("used_semantic_init") if rgcn_metrics else None,
         "community_modularity": modularity_info.get("modularity"),
+        "router": corpus_router.policy_status(),
+        "upload_limits": {"max_files": config.MAX_UPLOAD_FILES, "max_mb": config.MAX_UPLOAD_MB,
+                          "extensions": list(config.ALLOWED_UPLOAD_EXTENSIONS)},
+        "active_jobs": jobs.active(),
     }
 
 
-@app.post("/api/ingest/sample", response_model=IngestResponse)
+_LLM_DOWN = "LLM endpoint unavailable. Check HF_TOKEN/API configuration or start your configured Ollama server."
+
+
+@app.post("/api/ingest/sample")
 def ingest_sample():
+    """Queue ingestion of the bundled sample corpus; poll /api/ingest/jobs/{id}."""
     if not llm_client.is_available():
-        raise HTTPException(400, "LLM endpoint unavailable. Check HF_TOKEN/API configuration or start your configured Ollama server.")
+        raise HTTPException(400, _LLM_DOWN)
     paths = sorted(config.SAMPLE_DOCS_DIR.glob("*.txt"))
     if not paths:
         raise HTTPException(404, "No sample documents found.")
-    try:
-        return _ingest_documents(paths, mode="replace")
-    except Exception as e:
-        traceback.print_exc()
-        raise HTTPException(500, f"Ingestion failed: {e}")
+    return jobs.submit("sample", len(paths), lambda progress: _traced_ingest("ingest_sample", paths, "replace", progress))
 
 
-@app.post("/api/ingest/upload", response_model=IngestResponse)
+def _safe_filename(name: str) -> str:
+    # Drop any client-supplied directories and characters that could escape UPLOADS_DIR.
+    stem, suffix = Path(Path(name or "").name).stem, Path(name or "").suffix.lower()
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("._")[:80] or "document"
+    return stem + suffix
+
+
+async def _read_limited(f: UploadFile, limit: int) -> bytes:
+    content = bytearray()
+    while chunk := await f.read(1024 * 1024):
+        content.extend(chunk)
+        if len(content) > limit:
+            raise HTTPException(413, f"{f.filename} exceeds the {config.MAX_UPLOAD_MB:g} MB limit.")
+    return bytes(content)
+
+
+def _validate_upload(name: str, content: bytes) -> None:
+    if not content.strip():
+        raise HTTPException(422, f"{name} is empty.")
+    if name.endswith(".pdf"):
+        if not content.startswith(b"%PDF"):
+            raise HTTPException(415, f"{name} is not a valid PDF.")
+        try:
+            from io import BytesIO
+            from pypdf import PdfReader
+            reader = PdfReader(BytesIO(content))
+            if reader.is_encrypted:
+                raise HTTPException(422, f"{name} is encrypted.")
+            if not any((page.extract_text() or "").strip() for page in reader.pages[:5]):
+                raise HTTPException(422, f"{name} has no extractable text (scanned PDF?).")
+        except HTTPException:
+            raise
+        except Exception:
+            raise HTTPException(422, f"{name} could not be parsed as a PDF.")
+    else:
+        try:
+            content.decode("utf-8")
+        except UnicodeDecodeError:
+            raise HTTPException(415, f"{name} is not UTF-8 text.")
+
+
+@app.post("/api/ingest/upload")
 async def ingest_upload(files: List[UploadFile] = File(...), mode: str = Form("add")):
+    """Validate uploads (count, size, type, parseability), then queue ingestion as a background job."""
     if mode not in ("add", "replace"):
         raise HTTPException(400, "mode must be 'add' or 'replace'")
+    if len(files) > config.MAX_UPLOAD_FILES:
+        raise HTTPException(413, f"Upload at most {config.MAX_UPLOAD_FILES} files at a time.")
     if not llm_client.is_available():
-        raise HTTPException(400, "LLM endpoint unavailable. Check HF_TOKEN/API configuration or start your configured Ollama server.")
+        raise HTTPException(400, _LLM_DOWN)
+    limit = int(config.MAX_UPLOAD_MB * 1024 * 1024)
+    staged = []
+    for f in files:
+        name = _safe_filename(f.filename)
+        if Path(name).suffix not in config.ALLOWED_UPLOAD_EXTENSIONS:
+            raise HTTPException(415, f"{f.filename}: allowed types are {', '.join(config.ALLOWED_UPLOAD_EXTENSIONS)}.")
+        content = await _read_limited(f, limit)
+        _validate_upload(name, content)
+        staged.append((name, content))
+    # Write only after every file passed, so a rejected batch leaves nothing behind.
     config.UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
     saved_paths = []
-    for f in files:
-        dest = config.UPLOADS_DIR / f.filename
-        content = await f.read()
+    for name, content in staged:
+        dest = config.UPLOADS_DIR / name
         dest.write_bytes(content)
         saved_paths.append(dest)
-    try:
-        return _ingest_documents(saved_paths, mode=mode)
-    except Exception as e:
-        traceback.print_exc()
-        raise HTTPException(500, f"Ingestion failed: {e}")
+    return jobs.submit("upload", len(saved_paths),
+                       lambda progress: _traced_ingest("ingest_upload", saved_paths, mode, progress))
+
+
+@app.get("/api/ingest/jobs/{job_id}")
+def get_ingest_job(job_id: str):
+    job = jobs.get(job_id)
+    if job is None:
+        raise HTTPException(404, "Unknown or expired job.")
+    return job
 
 
 @app.get("/api/graph")
@@ -194,6 +290,29 @@ def get_corpus_analysis():
     return analysis
 
 
+def _traced_answer(engine: str, question: str, mode: str, endpoint: str, routing: dict = None, t=None) -> QueryResponse:
+    """Answer with one engine and attach latency/token/cost metrics and quality signals.
+    Pass an open trace `t` to include work done before this call (e.g. routing)."""
+    def run(trace):
+        with telemetry.span("engine"):
+            resp = engines.answer_question(engine, question, mode=mode)
+        resp.metrics = trace.summary()
+        engine_ms = resp.metrics["stage_ms"].get("engine", 0.0)
+        engine_llm_ms = sum(s["ms"] for stage, s in resp.metrics["llm_by_stage"].items() if stage != "routing")
+        # Non-generation engine time: retrieval, ranking, graph traversal and query analysis.
+        resp.metrics["stage_ms"]["retrieval"] = round(engine_ms - resp.metrics["stage_ms"].get("generation", 0.0), 1)
+        resp.metrics["retrieval_llm_ms"] = round(engine_llm_ms - resp.metrics["stage_ms"].get("generation", 0.0), 1)
+        resp.quality = telemetry.answer_quality(resp.answer, resp.citations)
+        resp.routing = routing
+        metrics_store.record(endpoint, "ok", resp.metrics, engine=engine, routed=routing is not None,
+                             quality=resp.quality, detail={"mode_used": resp.mode_used})
+        return resp
+    if t is not None:
+        return run(t)
+    with telemetry.trace() as trace:
+        return run(trace)
+
+
 @app.post("/api/query", response_model=QueryResponse)
 def query(req: QueryRequest):
     """Single-answer query for the Ask tab. engine="auto" now routes PER
@@ -208,31 +327,35 @@ def query(req: QueryRequest):
     query bandit is available yet. "graphrag"/"vector_rag" still force a
     manual choice, unchanged. This routing does NOT apply to
     /api/query/compare, which always runs all three engines by design."""
-    try:
-        engine = req.engine
-        reason = None
-        if engine == "auto":
-            engine, reason = corpus_router.route_query(req.question)
+    with telemetry.trace() as t:
+        try:
+            engine = req.engine
+            routing = None
+            if engine == "auto":
+                with telemetry.span("routing"):
+                    routing = corpus_router.route_query_details(req.question)
+                engine = routing["engine"]
 
-        resp = engines.answer_question(engine, req.question, mode=req.mode)
-
-        resp.engine_used = engine
-        resp.engine_reason = reason
-        return resp
-    except Exception as e:
-        traceback.print_exc()
-        raise HTTPException(500, str(e))
+            resp = _traced_answer(engine, req.question, req.mode, "query", routing, t)
+            resp.engine_used = engine
+            resp.engine_reason = routing["reason"] if routing else None
+            return resp
+        except Exception as e:
+            traceback.print_exc()
+            metrics_store.record("query", "error", t.summary(), engine=req.engine, detail={"error": str(e)[:300]})
+            raise HTTPException(500, str(e))
 
 
 @app.post("/api/query/compare", response_model=CompareResponse)
 def query_compare(req: QueryRequest):
+    # Each engine runs under its own trace so per-engine latency/tokens/cost are comparable.
     try:
-        graphrag_resp = query_engine.answer_question(req.question, mode=req.mode)
-        vector_resp = vector_baseline.answer_question(req.question)
-        hybrid_resp = engines.answer_question("hybrid_rag", req.question)
-        return CompareResponse(question=req.question, graphrag=graphrag_resp, vector_rag=vector_resp, hybrid_rag=hybrid_resp)
+        answers = {e: _traced_answer(e, req.question, req.mode, "compare") for e in engines.ENGINE_NAMES}
+        return CompareResponse(question=req.question, graphrag=answers["graphrag"],
+                               vector_rag=answers["vector_rag"], hybrid_rag=answers["hybrid_rag"])
     except Exception as e:
         traceback.print_exc()
+        metrics_store.record("compare", "error", detail={"error": str(e)[:300]})
         raise HTTPException(500, str(e))
 
 
@@ -256,6 +379,79 @@ def get_benchmark_results():
     if summary is None:
         return {"results": [], "graphrag_avg": None, "vector_rag_avg": None}
     return summary.model_dump()
+
+@app.get("/api/metrics")
+def get_metrics(window_minutes: int = Query(60, ge=1, le=60 * 24 * 30), endpoint: Optional[str] = None):
+    """Aggregates over recorded requests: latency percentiles (total and per stage), throughput,
+    tokens, cost, error rate, abstention/citation-coverage and engine usage."""
+    return metrics_store.summary(window_minutes, endpoint)
+
+
+@app.get("/api/metrics/recent")
+def get_recent_metrics(limit: int = Query(50, ge=1, le=500)):
+    return metrics_store.recent(limit)
+
+
+@app.get("/api/rl/results")
+def get_rl_results():
+    """Offline router evaluation: per-split summaries, analyses (RL/analyze_results.py) and policy metadata."""
+    root = config.RL_RESULTS_DIR
+    def load(path):
+        try:
+            return json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            return None
+    policy = load(root / "policy.json")
+    return {
+        "splits": {split: {"summary": load(root / split / "summary.json"), "analysis": load(root / split / "analysis.json")}
+                   for split in ("train", "dev", "test")},
+        "policy": {"arms": policy.get("arms"), "alpha": policy.get("alpha"), "context_dim": policy.get("context_dim"),
+                   "metadata": policy.get("metadata")} if policy else None,
+    }
+
+
+@app.get("/api/rl/examples")
+def get_rl_examples(limit: int = Query(9, ge=1, le=40)):
+    """Real routed questions for the landing page: the frozen policy's predicted reward per engine
+    (recomputed from each record's saved context) next to the judged reward each engine earned.
+    Prefers held-out splits; train examples are in-sample for the policy and flagged as such."""
+    from .query_bandit import LinUCBBandit
+    root = config.RL_RESULTS_DIR
+    try:
+        policy = LinUCBBandit.load(root / "policy.json")
+    except (OSError, ValueError, KeyError):
+        return {"split": None, "held_out": False, "examples": []}
+    for split in ("test", "dev", "train"):
+        try:
+            records = json.loads((root / split / "results.json").read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            continue
+        records = [r for r in records if len(r.get("context") or []) == policy.context_dim]
+        if records:
+            break
+    else:
+        return {"split": None, "held_out": False, "examples": []}
+    # Round-robin over categories, preferring text questions (they read better than bare numeric prompts).
+    by_cat = {}
+    for r in sorted(records, key=lambda r: (r.get("task") == "numeric", len(r["question"]))):
+        if 30 <= len(r["question"]) <= 170:
+            by_cat.setdefault(r.get("benchmark_category", r["category"]), []).append(r)
+    picked = []
+    while len(picked) < limit and any(by_cat.values()):
+        for queue in by_cat.values():
+            if queue and len(picked) < limit:
+                picked.append(queue.pop(0))
+    examples = []
+    for r in picked:
+        predicted = {arm: round(policy.predicted_reward(arm, r["context"]), 4) for arm in policy.arms}
+        chosen = r.get("router_engine") or max(predicted, key=predicted.get)
+        rewards = {e: r.get("reward_" + e) for e in engines.ENGINE_NAMES}
+        examples.append({"question": r["question"], "category": r.get("benchmark_category", r["category"]),
+                         "task": r.get("task"), "predicted_rewards": predicted, "chosen": chosen,
+                         "judged_rewards": rewards, "router_reward": rewards.get(chosen),
+                         "oracle_reward": max(v for v in rewards.values() if v is not None)})
+    return {"split": split, "held_out": split != "train", "examples": examples}
+
 
 # Serve the existing static interface from the same origin in deployments.
 from fastapi.staticfiles import StaticFiles

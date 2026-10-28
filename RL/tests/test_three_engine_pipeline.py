@@ -145,7 +145,7 @@ def test_api_selects_hybrid_and_comparison_includes_all_three():
     with patch.object(main.engines, "answer_question", side_effect=response):
         result = main.query(models.QueryRequest(question="Q?", engine="hybrid_rag"))
     assert result.engine_used == "hybrid_rag"
-    with patch.object(main.query_engine, "answer_question", return_value=response("graph", "Q?")), patch.object(main.vector_baseline, "answer_question", return_value=response("vector", "Q?")), patch.object(main.engines, "answer_question", side_effect=response):
+    with patch.object(main.engines, "answer_question", side_effect=response):
         assert main.query_compare(models.QueryRequest(question="Q?")).hybrid_rag.answer == "hybrid_rag"
 
 

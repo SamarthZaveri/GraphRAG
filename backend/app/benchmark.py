@@ -35,6 +35,56 @@ Rubric: 5 fully correct, grounded and complete; 4 main facts correct with minor 
 Include every supplied candidate label, each score finite and in [0,5]."""
 
 
+def _normalize_label(key):
+    # Accept "A", "a", "Candidate A", "candidate_a" etc.
+    text = str(key).strip().upper().replace("_", " ")
+    if text.startswith("CANDIDATE"):
+        text = text[len("CANDIDATE"):].strip()
+    return text if len(text) == 1 and text.isalpha() else None
+
+
+def _coerce_score(value):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, str):
+        value = value.strip().split("/")[0].strip()
+        try:
+            value = float(value)
+        except ValueError:
+            return None
+    if not isinstance(value, (int, float)) or not math.isfinite(value) or not 0 <= value <= 5:
+        return None
+    return float(value)
+
+
+def _parse_judge_scores(data, labels):
+    raw = data.get("scores", data) if isinstance(data, dict) else {}
+    if isinstance(raw, list):
+        # [{"label": "A", "score": 4, ...}, ...]
+        raw = {item.get("label") or item.get("candidate"): item for item in raw if isinstance(item, dict)}
+    if not isinstance(raw, dict):
+        return None
+    entries = {}
+    for key, entry in raw.items():
+        label = _normalize_label(key)
+        if label:
+            entries[label] = entry
+    result = {}
+    for label, engine in labels.items():
+        entry = entries.get(label)
+        if isinstance(entry, dict):
+            score = _coerce_score(entry.get("score"))
+            rationale = entry.get("rationale") or entry.get("reason") or entry.get("explanation")
+        else:
+            score, rationale = _coerce_score(entry), None
+        if score is None:
+            return None
+        if not isinstance(rationale, str) or not rationale.strip():
+            rationale = "No rationale provided by judge."
+        result[engine] = {"score": score, "rationale": rationale}
+    return result or None
+
+
 def judge_answers(question, reference, answers, evidence=None):
     items = list(answers.items())
     seed = int(hashlib.sha256(question.encode()).hexdigest()[:16], 16)
@@ -43,22 +93,16 @@ def judge_answers(question, reference, answers, evidence=None):
     prompt = json.dumps({"question": question, "reference_answer": reference,
                          "source_evidence": evidence or [],
                          "candidates": {chr(65+i): answer for i, (_, answer) in enumerate(items)}})
-    for attempt in range(3):
+    retry_note = ("\n\nYour previous reply was not valid. Return ONLY the JSON object with a "
+                  f"numeric score (0-5) and a rationale for each of: {', '.join(labels)}.")
+    # Temperature 0 makes every retry identical, so raise it after the first failure.
+    for attempt, temperature in enumerate((0, 0.3, 0.6)):
         try:
-            data = chat_json(config.JUDGE_MODEL, JUDGE_SYSTEM_PROMPT, prompt,
-                             max_tokens=2200, temperature=0)
-            raw = data.get("scores", {})
-            result = {}
-            for label, engine in labels.items():
-                entry = raw.get(label, {}) if isinstance(raw, dict) else {}
-                score = entry.get("score") if isinstance(entry, dict) else None
-                rationale = entry.get("rationale") if isinstance(entry, dict) else None
-                if isinstance(score, bool) or not isinstance(score, (int, float)) or not math.isfinite(score) or not 0 <= score <= 5:
-                    break
-                if not isinstance(rationale, str) or not rationale.strip():
-                    break
-                result[engine] = {"score": float(score), "rationale": rationale}
-            if len(result) == len(answers) and result:
+            data = chat_json(config.JUDGE_MODEL, JUDGE_SYSTEM_PROMPT,
+                             prompt + (retry_note if attempt else ""),
+                             max_tokens=2200, temperature=temperature)
+            result = _parse_judge_scores(data, labels)
+            if result and len(result) == len(answers):
                 return result
         except LLMError:
             if attempt == 2:

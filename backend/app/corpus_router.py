@@ -93,16 +93,42 @@ def load_analysis() -> Optional[dict]:
         return json.load(f)
 
 
-def _fallback_to_corpus_analysis(prefix: str) -> Tuple[str, str]:
+def _fallback_to_corpus_analysis(prefix: str) -> dict:
     analysis = load_analysis() or analyze_corpus()
-    engine = analysis.get("recommended_engine", "graphrag")
-    reason = f"[{prefix}] {analysis.get('reason', '')}"
-    return engine, reason
+    return {"engine": analysis.get("recommended_engine", "graphrag"),
+            "reason": f"[{prefix}] {analysis.get('reason', '')}", "source": "corpus_fallback"}
+
+
+def _policy_matches_config(bandit: LinUCBBandit) -> bool:
+    return (bandit.metadata.get("retrieval_version") == config.RETRIEVAL_VERSION
+            and bandit.metadata.get("answer_model") == config.ANSWER_MODEL
+            and bandit.metadata.get("extraction_model") == config.EXTRACTION_MODEL
+            and bandit.metadata.get("llm_backend") == config.LLM_BACKEND)
+
+
+def policy_status() -> dict:
+    """Whether a deployed router policy exists and matches the serving configuration."""
+    if not QUERY_BANDIT_PATH.exists():
+        return {"deployed": False, "compatible": False}
+    try:
+        bandit = LinUCBBandit.load(QUERY_BANDIT_PATH)
+    except (OSError, ValueError, KeyError):
+        return {"deployed": True, "compatible": False}
+    return {"deployed": True, "compatible": _policy_matches_config(bandit), "arms": bandit.arms,
+            "metadata": {k: bandit.metadata.get(k) for k in ("dataset", "split", "answer_model", "retrieval_version")}}
 
 
 def route_query(question: str) -> Tuple[str, str]:
+    """Per-question engine decision. Returns (engine, human_readable_reason)."""
+    decision = route_query_details(question)
+    return decision["engine"], decision["reason"]
+
+
+def route_query_details(question: str) -> dict:
     """
-    Per-question engine decision. Returns (engine, human_readable_reason).
+    Per-question engine decision with the router's evidence: engine, reason,
+    source ("bandit", "corpus_fallback" or "empty"), and for the bandit the
+    predicted question category and per-engine predicted rewards.
 
     Falls back to the static corpus-level recommendation (analyze_corpus)
     if: no documents are ingested, no trained query bandit exists yet
@@ -112,7 +138,7 @@ def route_query(question: str) -> Tuple[str, str]:
     """
     store = GraphStore.load()
     if store is None or store.graph.number_of_nodes() == 0:
-        return "vector_rag", "No documents ingested yet."
+        return {"engine": "vector_rag", "reason": "No documents ingested yet.", "source": "empty"}
 
     if not QUERY_BANDIT_PATH.exists():
         return _fallback_to_corpus_analysis(
@@ -128,10 +154,7 @@ def route_query(question: str) -> Tuple[str, str]:
         from .engines import ENGINE_NAMES
         if set(bandit.arms) != set(ENGINE_NAMES) or bandit.context_dim != router_features.QUERY_CONTEXT_DIM:
             return _fallback_to_corpus_analysis("fallback: retrain router for all three engines")
-        if (bandit.metadata.get("retrieval_version") != config.RETRIEVAL_VERSION
-                or bandit.metadata.get("answer_model") != config.ANSWER_MODEL
-                or bandit.metadata.get("extraction_model") != config.EXTRACTION_MODEL
-                or bandit.metadata.get("llm_backend") != config.LLM_BACKEND):
+        if not _policy_matches_config(bandit):
             return _fallback_to_corpus_analysis("fallback: router model/retrieval configuration changed; retrain")
         # Serving time uses pure exploitation (predicted_reward), not
         # select_arm's UCB exploration bonus -- a live request isn't an
@@ -142,7 +165,9 @@ def route_query(question: str) -> Tuple[str, str]:
                   f"graphrag={rewards.get('graphrag', 0):.2f}, "
                   f"vector_rag={rewards.get('vector_rag', 0):.2f}, "
                   f"hybrid_rag={rewards.get('hybrid_rag', 0):.2f}")
-        return engine, reason
+        return {"engine": engine, "reason": reason, "source": "bandit", "category": category,
+                "predicted_rewards": {arm: round(r, 4) for arm, r in rewards.items()},
+                "policy": {k: bandit.metadata.get(k) for k in ("dataset", "split", "dataset_fingerprint")}}
     except Exception:
         traceback.print_exc()
         return _fallback_to_corpus_analysis("fallback: query router error, see server logs")

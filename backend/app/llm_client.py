@@ -6,7 +6,7 @@ import threading
 from email.utils import parsedate_to_datetime
 from urllib.parse import urlsplit
 import requests
-from . import config
+from . import config, telemetry
 
 
 class LLMError(RuntimeError):
@@ -126,6 +126,7 @@ def chat(model, system, user, max_tokens=1000, json_mode=False, temperature=0.1)
     for attempt in range(max(1, config.LLM_RETRIES, config.RATE_LIMIT_ATTEMPTS)):
         try:
             pace_request()
+            started = time.perf_counter()
             response = requests.post(url, headers=headers, json=payload, timeout=(10, config.OLLAMA_REQUEST_TIMEOUT))
         except requests.RequestException as error:
             if attempt + 1 >= max(1, config.LLM_RETRIES) or isinstance(error, (requests.exceptions.SSLError, requests.exceptions.ProxyError)):
@@ -162,7 +163,20 @@ def chat(model, system, user, max_tokens=1000, json_mode=False, temperature=0.1)
             raise LLMError(f"Invalid chat response from {model}.") from None
         if not isinstance(content, str) or not content.strip():
             raise LLMError(f"Empty chat response from {model}.")
+        _record_usage(model, data, time.perf_counter() - started, system + user, content)
         return content
+
+
+def _record_usage(model, data, seconds, prompt_text, content):
+    """Report provider token counts to the active request trace (no-op without one)."""
+    if config.LLM_BACKEND == "api":
+        usage = data.get("usage") or {}
+        prompt_tokens, completion_tokens, generation_seconds = usage.get("prompt_tokens"), usage.get("completion_tokens"), None
+    else:
+        prompt_tokens, completion_tokens = data.get("prompt_eval_count"), data.get("eval_count")
+        generation_seconds = data["eval_duration"] / 1e9 if data.get("eval_duration") else None
+    telemetry.record_llm_call(model, seconds, prompt_tokens, completion_tokens,
+                              prompt_text, content, generation_seconds)
 
 
 def strip_json_fences(text):

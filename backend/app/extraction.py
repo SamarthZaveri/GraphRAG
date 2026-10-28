@@ -11,7 +11,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import List
 
-from . import config
+from . import config, telemetry
 from .llm_client import chat_json, OutputTruncatedError, LLMError
 from .models import ExtractionResult, Entity, Triple
 
@@ -200,7 +200,7 @@ def extract_document(doc_id: str, text: str) -> "tuple[list[dict], list[Extracti
               f"(model={config.EXTRACTION_MODEL})")
         t0 = time.time()
         with ThreadPoolExecutor(max_workers=config.EXTRACTION_CONCURRENCY) as pool:
-            llm_results = list(pool.map(extract_from_chunk, narrative_chunks))
+            llm_results = list(pool.map(telemetry.bind(extract_from_chunk), narrative_chunks))
         elapsed = time.time() - t0
         avg_per_chunk = elapsed / len(narrative_chunks)
         print(f"  [extract_document] {doc_id}: {len(narrative_chunks)} chunks finished in "
