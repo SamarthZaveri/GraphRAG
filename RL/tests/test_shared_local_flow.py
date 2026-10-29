@@ -19,6 +19,15 @@ from app import config, benchmark, engines
     ("FINAL_NUMERIC_ANSWER: no", "no", "no", "", True),
     ("FINAL_NUMERIC_ANSWER: nan", "12", "12", "", False),
     ("FINAL_NUMERIC_ANSWER: 1\nFINAL_NUMERIC_ANSWER: 12", "12", "12", "", False),
+    # v2: bare percent for a ratio gold, descriptive units, the filing's own scale.
+    ("FINAL_NUMERIC_ANSWER: 5.42", "0.05418", "5.4%", "divide(338, 6239)", True),
+    ("FINAL_NUMERIC_ANSWER: 0.0542", "0.05418", "5.4%", "divide(338, 6239)", True),
+    ("FINAL_NUMERIC_ANSWER: 15.04", "0.20997", "21%", "divide(1, 2)", False),
+    ("FINAL_NUMERIC_ANSWER: 5.42", "0.05418", "0.05418", "", False),
+    ("FINAL_NUMERIC_ANSWER: 71 thousand barrels per day", "71.0", "71", "", True),
+    ("FINAL_NUMERIC_ANSWER: -132 mmboe", "-132.0", "-132", "", True),
+    ("FINAL_NUMERIC_ANSWER: 72 thousand barrels per day", "71.0", "71", "", False),
+    ("FINAL_NUMERIC_ANSWER: 71 in 2004", "71.0", "71", "", False),
 ])
 def test_numeric_gold_scoring(answer, gold, human, program, correct):
     result = score_numeric(answer, {"reference_answer": gold, "human_answer": human, "reference_program": program, "question": "What is the result?"})
@@ -127,3 +136,29 @@ def test_shared_training_rejects_incompatible_rewards(tmp_path, problem, message
     (tmp_path / "summary.json").write_text(json.dumps({"complete": problem != "incomplete"}))
     with pytest.raises(ValueError, match=message):
         load_weighted(path)
+
+
+def test_rescore_resigns_numeric_checkpoints_and_keeps_text_scores(tmp_path):
+    import hashlib
+    from rescore_numeric import rescore_split
+    from run_public_benchmark import checkpoint_signature, metric_name
+    bundle = {"id": "b0", "fingerprint": "f0", "questions": [
+        {"id": "num", "question": "What was the return on assets?", "reference_answer": "0.05418", "human_answer": "5.4%", "reference_program": "divide(338, 6239)", "task": "numeric"},
+        {"id": "txt", "question": "Why?", "reference_answer": "Because.", "task": "text"}]}
+    manifest = {"dataset": "shared_finqa", "splits": {"dev": {"bundles": [bundle]}}}
+    checkpoint_dir = tmp_path / "dev" / "questions"
+    checkpoint_dir.mkdir(parents=True)
+    old_meta = {"metric": "shared_numeric_scalar_v1_text_judge_v1"}
+    for q, answer, reward in ((bundle["questions"][0], "FINAL_NUMERIC_ANSWER: 5.42", 0.), (bundle["questions"][1], "Because.", .8)):
+        record = {"task": q["task"], "metadata": old_meta, "answers": {e: {"answer": answer} for e in engines.ENGINE_NAMES},
+                  "judge": {e: {"score": reward * 5} for e in engines.ENGINE_NAMES}, **{"reward_" + e: reward for e in engines.ENGINE_NAMES}}
+        path = checkpoint_dir / (hashlib.sha256(q["id"].encode()).hexdigest() + ".json")
+        path.write_text(json.dumps({"signature": checkpoint_signature(old_meta, bundle), "record": record}))
+    stats = rescore_split(manifest, checkpoint_dir)
+    assert stats["checkpoints"] == 2 and len(stats["flipped"]) == len(engines.ENGINE_NAMES)
+    saved = {p.name: json.loads(p.read_text()) for p in checkpoint_dir.glob("*.json")}
+    num, txt = (saved[hashlib.sha256(i.encode()).hexdigest() + ".json"] for i in ("num", "txt"))
+    new_meta = {"metric": metric_name("shared_finqa")}
+    assert num["signature"] == txt["signature"] == checkpoint_signature(new_meta, bundle)
+    assert num["record"]["reward_hybrid_rag"] == 1. and txt["record"]["reward_hybrid_rag"] == .8
+    assert rescore_split(manifest, checkpoint_dir)["already_current"] == 2

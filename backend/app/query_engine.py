@@ -3,16 +3,17 @@ The query engine that makes this "GraphRAG" rather than vector RAG.
 
 For a given question it decides whether to do:
 
-  - LOCAL search: find the specific entity/entities the question is about,
-    walk 2 hops of the graph around them, PLUS pull in R-GCN-nearest nodes
-    (entities close in embedding space even if not directly graph-adjacent —
-    this catches relationships the extraction step failed to link
-    explicitly), and ground the answer in that neighborhood's edges +
-    the actual source chunk text (not just short evidence paraphrases).
+  - LOCAL search (local, multi-hop and consistency questions): find the
+    entities the question is about, walk 2 hops of the graph around them,
+    PLUS pull in R-GCN-nearest nodes (entities close in embedding space even
+    if not directly graph-adjacent — this catches relationships the
+    extraction step failed to link explicitly). From that neighborhood, keep
+    the facts (relations and per-node values) and source chunks most
+    relevant to the question.
 
-  - GLOBAL search: retrieve the community summaries most relevant to the
-    question (ranked by local text-embedding similarity, not dumped in
-    wholesale) and synthesize across them.
+  - GLOBAL search (broad, thematic questions): retrieve the community
+    summaries most relevant to the question and ground each one with its
+    most relevant member chunks, since summaries alone drop most figures.
 
 Local answers are grounded in graph-derived facts and original source chunks.
 No vector-database chunks are retrieved by this engine.
@@ -20,7 +21,7 @@ No vector-database chunks are retrieved by this engine.
 from __future__ import annotations
 import re
 from difflib import SequenceMatcher
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 from . import config
 from .community import load_summaries
@@ -34,6 +35,9 @@ LOCAL_HOPS = 2
 RGCN_EXPANSION_K = 4
 GLOBAL_TOP_N_COMMUNITIES = 4
 GRAPH_CHUNK_TOP_K = 4
+GRAPH_FACT_TOP_K = 40
+MAX_CANDIDATE_FACTS = 800
+CHUNKS_PER_COMMUNITY = 2
 
 # Real 12-corpus, 70-question evaluation found GraphRAG's worst losses
 # clustered on larger multi-doc graphs, with judge rationales repeatedly
@@ -87,7 +91,7 @@ def classify_query(question: str) -> Tuple[str, List[str]]:
     decides GraphRAG vs vector RAG -- not built in this file, see
     corpus_router.py) can use the full 4-way category as a feature,
     without needing a second LLM call at query time."""
-    data = chat_json(config.EXTRACTION_MODEL, ROUTER_SYSTEM_PROMPT, question, max_tokens=250)
+    data = chat_json(config.QUERY_MODEL, ROUTER_SYSTEM_PROMPT, question, max_tokens=250)
     category = data.get("category", "global")
     if category not in ("local", "global", "multi_hop", "conflict"):
         category = "global"
@@ -95,16 +99,11 @@ def classify_query(question: str) -> Tuple[str, List[str]]:
 
 
 def route_question(question: str) -> Tuple[str, List[str]]:
-    """Backward-compatible local/global mode for GraphRAG's own internal
-    search dispatch (see answer_question below) -- unchanged behavior from
-    before this edit. Collapses the fuller 4-way category down to what the
-    retrieval logic currently understands: "local" stays local search;
-    global/multi_hop/conflict all route to global search, since multi_hop
-    and conflict both need synthesis across more than one specific spot,
-    same as global does."""
+    """Local/global search mode and seed entities for one question. Only "global" questions use
+    global search: multi-hop and consistency questions name specific entities whose neighborhood
+    holds the facts to connect, and community summaries alone drop most figures."""
     category, entities = classify_query(question)
-    mode = "local" if category == "local" else "global"
-    return mode, entities
+    return ("global" if category == "global" else "local"), entities
 
 
 def _year_aware_score(name: str, candidate: str) -> float:
@@ -155,6 +154,18 @@ def _fuzzy_match_nodes(names: List[str], store: GraphStore, top_n: int = 4) -> L
     return matched[:top_n]
 
 
+def _rank(question: str, texts: List[str], k: int) -> List[int]:
+    """Indices of the k texts most similar to the question (local embeddings), in rank order.
+    Falls back to discovery order if the embedding backend is unavailable."""
+    if len(texts) <= 1:
+        return list(range(len(texts)))
+    try:
+        from .text_embeddings import top_k as embed_top_k
+        return [i for i, _score in embed_top_k(question, texts, k=min(k, len(texts)))]
+    except Exception:
+        return list(range(min(k, len(texts))))
+
+
 def _graph_hop_expand(store: GraphStore, seeds: List[str], hops: int) -> set:
     visited = set(seeds)
     frontier = set(seeds)
@@ -169,7 +180,25 @@ def _graph_hop_expand(store: GraphStore, seeds: List[str], hops: int) -> set:
     return visited
 
 
+def _candidate_facts(store: GraphStore, nodes: set) -> List[Tuple[str, str, str, str]]:
+    """(fact text, chunk_id, doc_id, node) for edges inside the neighborhood and value facts on its nodes."""
+    facts = []
+    for u, v, data in store.graph.edges(data=True):
+        if u in nodes and v in nodes:
+            facts.append((f"- {u} --[{data.get('predicate')}]--> {v}  (source: {data.get('doc_id')}; {data.get('evidence') or ''})",
+                          data.get("chunk_id"), data.get("doc_id"), u))
+    for n in sorted(nodes):
+        if store.graph.has_node(n):
+            for value in store.graph.nodes[n].get("values", []):
+                facts.append((f"- {n} | {value['predicate']}: {value['value']}  (source: {value['doc_id']}; {value.get('evidence') or ''})",
+                              value.get("chunk_id"), value.get("doc_id"), n))
+    return facts
+
+
 def _local_context(question: str, store: GraphStore, seed_entities: List[str]):
+    """Neighborhood of the question's entities: graph hops plus R-GCN neighbors, then the most
+    question-relevant facts and grounding chunks. Ranking matters because a company node links
+    every metric it reports, so two hops can reach most of the graph."""
     seeds = _fuzzy_match_nodes(seed_entities, store)
     if not seeds:
         q_lower = question.lower()
@@ -183,54 +212,60 @@ def _local_context(question: str, store: GraphStore, seed_entities: List[str]):
     rgcn_neighbors = rgcn.nearest_nodes(seeds, k=RGCN_EXPANSION_K, exclude=visited) if seeds else []
     visited |= set(rgcn_neighbors)
 
-    facts = []
-    citations: List[Citation] = []
-    chunk_ids_seen = set()
-    for u, v, data in store.graph.edges(data=True):
-        if u in visited and v in visited:
-            facts.append(f"- {u} --[{data.get('predicate')}]--> {v}  "
-                          f"(source: {data.get('doc_id')}, evidence: {data.get('evidence')})")
-            cid = data.get("chunk_id")
-            if cid and cid not in chunk_ids_seen:
-                chunk_ids_seen.add(cid)
-                chunk = store.chunks.get(cid, {})
-                citations.append(Citation(
-                    doc_id=data.get("doc_id", ""), chunk_id=cid,
-                    snippet=(chunk.get("text", "")[:300]),
-                ))
+    candidates = _candidate_facts(store, visited)[:MAX_CANDIDATE_FACTS]
+    ranked = [candidates[i] for i in _rank(question, [f[0] for f in candidates], GRAPH_FACT_TOP_K)]
+    facts = [f[0] for f in ranked]
 
+    # Grounding chunks: those cited by the top facts plus the neighborhood's other chunks,
+    # ordered by relevance to the question.
+    cited = list(dict.fromkeys(f[1] for f in ranked if f[1] in store.chunks))
+    others = sorted({c for n in visited if store.graph.has_node(n) for c in store.chunk_ids_of(n)} - set(cited))
+    chunk_ids = cited + others
+    order = _rank(question, [store.chunks[c]["text"] for c in chunk_ids], GRAPH_CHUNK_TOP_K)
+    top_chunks = [chunk_ids[i] for i in order]
+
+    citations: List[Citation] = []
+    for cid in top_chunks + [c for c in cited if c not in top_chunks]:
+        chunk = store.chunks.get(cid, {})
+        citations.append(Citation(doc_id=chunk.get("doc_id", ""), chunk_id=cid, snippet=chunk.get("text", "")[:300]))
+
+    fact_nodes = {f[3] for f in ranked} | set(seeds)
     node_lines = []
-    for n in visited:
+    for n in sorted(fact_nodes):
         if store.graph.has_node(n):
             d = store.graph.nodes[n]
             tag = " [via R-GCN]" if n in rgcn_neighbors else ""
             node_lines.append(f"- {n} ({d.get('type')}){tag}: {d.get('description', '')}")
 
-    # Preserve graph-edge discovery order when selecting supporting chunks.
-    raw_chunks = []
-    for citation in citations[:GRAPH_CHUNK_TOP_K]:
-        chunk = store.chunks.get(citation.chunk_id, {})
-        if chunk.get("text"):
-            raw_chunks.append(f"[{chunk.get('doc_id')} | {citation.chunk_id}]\n{chunk['text']}")
-
+    raw_chunks = [f"[{store.chunks[c].get('doc_id')} | {c}]\n{store.chunks[c]['text']}"
+                  for c in top_chunks if store.chunks.get(c, {}).get("text")]
     return seeds, list(visited), node_lines, facts, citations[:14], raw_chunks
 
 
-def answer_local(question: str) -> QueryResponse:
+def _bounded(parts: List[str]) -> str:
+    """Join context sections, trimming later ones to the graph context budget."""
+    out, used = [], 0
+    for part in parts:
+        room = config.GRAPH_CONTEXT_CHARS - used
+        if room <= 200:
+            break
+        out.append(part[:room])
+        used += min(len(part), room)
+    return "\n".join(out)
+
+
+def answer_local(question: str, entities: List[str]) -> Optional[QueryResponse]:
+    """Local search; None when no part of the graph matches the question's entities."""
     store = GraphStore.load()
     if store is None or store.graph.number_of_nodes() == 0:
         return QueryResponse(question=question, mode_used="local",
                               answer="No documents have been ingested yet.", citations=[])
-    _, seed_entities = route_question(question)
-    seeds, visited, node_lines, facts, citations, raw_chunks = _local_context(
-        question, store, seed_entities
-    )
-
-    context_parts = ["ENTITIES:\n" + "\n".join(node_lines), "\nFACTS:\n" + "\n".join(facts)]
-    if raw_chunks:
-        context_parts.append("\nSOURCE TEXT:\n" + "\n\n".join(raw_chunks))
-    context = "\n".join(context_parts)
-
+    seeds, visited, node_lines, facts, citations, raw_chunks = _local_context(question, store, entities)
+    if not seeds or not facts:
+        return None
+    context = _bounded(["FACTS:\n" + "\n".join(facts),
+                        ("\nSOURCE TEXT:\n" + "\n\n".join(raw_chunks)) if raw_chunks else "",
+                        "\nENTITIES:\n" + "\n".join(node_lines)])
     answer = generate_answer(question, context)
     return QueryResponse(question=question, mode_used="local", answer=answer,
                           citations=citations, graph_path=visited[:24])
@@ -239,16 +274,14 @@ def answer_local(question: str) -> QueryResponse:
 def _rank_communities(question: str, summaries):
     if len(summaries) <= GLOBAL_TOP_N_COMMUNITIES:
         return summaries
-    try:
-        from .text_embeddings import top_k as embed_top_k
-        texts = [f"{s.title}: {s.summary}" for s in summaries]
-        hits = embed_top_k(question, texts, k=GLOBAL_TOP_N_COMMUNITIES)
-        return [summaries[i] for i, _score in hits]
-    except Exception:
-        return summaries[:GLOBAL_TOP_N_COMMUNITIES]
+    order = _rank(question, [f"{s.title}: {s.summary}" for s in summaries], GLOBAL_TOP_N_COMMUNITIES)
+    return [summaries[i] for i in order]
 
 
 def answer_global(question: str) -> QueryResponse:
+    """Global search: the most relevant community summaries for breadth, each grounded by its
+    most relevant member chunks. Summaries alone lose figures (they kept 42% of the numbers
+    FinQA questions needed), so the answer model also sees the source text they summarize."""
     summaries = load_summaries()
     if not summaries:
         return QueryResponse(question=question, mode_used="global",
@@ -256,26 +289,44 @@ def answer_global(question: str) -> QueryResponse:
                               citations=[])
     ranked = _rank_communities(question, summaries)
     store = GraphStore.load()
+
+    def members(summary):
+        return [m for m in summary.members if store is not None and store.graph.has_node(m)]
+
     def source_docs(summary):
-        if store is None:
-            return []
-        return sorted({doc for member in summary.members if store.graph.has_node(member)
-                       for doc in store.graph.nodes[member].get("source_docs", [])})
-    context = "\n\n".join(
-        f"[Community: {s.title}; source documents: {', '.join(source_docs(s))}]\n{s.summary}" for s in ranked
-    )
+        return sorted({doc for m in members(summary) for doc in store.graph.nodes[m].get("source_docs", [])})
+
+    blocks, grounding, citations, used_chunks = [], [], [], set()
+    for s in ranked:
+        blocks.append(f"[Community: {s.title}; source documents: {', '.join(source_docs(s))}]\n{s.summary}")
+        if store is None or s.level > 0:
+            continue  # the corpus-level rollup has no single neighborhood to ground
+        chunk_ids = sorted({c for m in members(s) for c in store.chunk_ids_of(m)} - used_chunks)
+        for i in _rank(question, [store.chunks[c]["text"] for c in chunk_ids], CHUNKS_PER_COMMUNITY):
+            cid = chunk_ids[i]
+            used_chunks.add(cid)
+            chunk = store.chunks[cid]
+            grounding.append(f"[{chunk.get('doc_id')} | {cid}]\n{chunk['text']}")
+            citations.append(Citation(doc_id=chunk.get("doc_id", ""), chunk_id=cid, snippet=chunk["text"][:300]))
+    context = _bounded(["COMMUNITY SUMMARIES:\n" + "\n\n".join(blocks),
+                        ("\nSOURCE TEXT:\n" + "\n\n".join(grounding)) if grounding else ""])
     answer = generate_answer(question, context)
-    citations = [Citation(doc_id=doc, chunk_id=f"community_{s.community_id}", snippet=s.summary[:300])
-                 for s in ranked for doc in source_docs(s)]
+    citations += [Citation(doc_id=doc, chunk_id=f"community_{s.community_id}", snippet=s.summary[:300])
+                  for s in ranked for doc in source_docs(s)]
     return QueryResponse(question=question, mode_used="global", answer=answer, citations=citations)
 
 
-def answer_question(question: str, mode: str = "auto") -> QueryResponse:
-    """Answer using graph neighborhoods or community summaries."""
-    if mode == "auto":
-        routed_mode, _ = route_question(question)
-    else:
-        routed_mode = mode
+def answer_question(question: str, mode: str = "auto", classification: Optional[Tuple[str, List[str]]] = None) -> QueryResponse:
+    """Answer from graph neighborhoods (local) or community summaries plus their sources (global).
+
+    classification is (category, entities) from classify_query when the caller already has it
+    (the router does), so a query costs one classification call instead of two. Only "global"
+    questions use global search: multi-hop and consistency questions are about specific
+    entities, whose neighborhood holds the facts to connect or compare."""
+    category, entities = classification if classification is not None else classify_query(question)
+    routed_mode = mode if mode in ("local", "global") else ("global" if category == "global" else "local")
     if routed_mode == "local":
-        return answer_local(question)
+        response = answer_local(question, entities)
+        if response is not None:
+            return response
     return answer_global(question)

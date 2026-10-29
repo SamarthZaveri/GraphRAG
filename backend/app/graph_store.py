@@ -60,8 +60,42 @@ def _normalize(name: str) -> str:
     return name
 
 
+_CORPORATE_SUFFIX = re.compile(r",?\s+(inc|corp|corporation|co|company|llc|plc|ltd|holdings)\.?$", re.I)
+
+
+def _match_form(name: str) -> str:
+    """Comparison form: lowercase without a trailing corporate suffix ("Delta Air Lines, Inc.")."""
+    return _CORPORATE_SUFFIX.sub("", name.strip()).lower()
+
+
 def _similar(a: str, b: str) -> float:
-    return SequenceMatcher(None, a.lower(), b.lower()).ratio()
+    return SequenceMatcher(None, _match_form(a), _match_form(b)).ratio()
+
+
+_NUMBER_TOKEN = re.compile(r"\d+(?:\.\d+)?|\b[qh][1-4]\b|\bfy\d*\b", re.I)
+
+
+def _numbers(name: str) -> set:
+    return {t.lower() for t in _NUMBER_TOKEN.findall(name)}
+
+
+def _mergeable(a: str, b: str) -> bool:
+    """Names that differ only by year, quarter or amount are different entities: "net revenue
+    Q2 2025" vs "net revenue Q2 2024" are 0.96 similar as strings, yet merging them would
+    attach one period's facts to the other."""
+    return _numbers(a) == _numbers(b)
+
+
+# Objects that are values, not things: figures, percentages, dated amounts and direction words.
+_LITERAL_WORDS = {"up", "down", "increase", "decrease", "increased", "decreased", "flat", "higher", "lower",
+                  "unchanged", "yes", "no", "true", "false", "none", "n/a"}
+
+
+def is_literal(text: str) -> bool:
+    text = text.strip().lower()
+    if text in _LITERAL_WORDS:
+        return True
+    return bool(re.search(r"\d", text)) and len(text.split()) <= 6 and not re.search(r"\b(inc|corp|llc|plc|ltd)\b", text)
 
 
 class EntityResolver:
@@ -80,6 +114,7 @@ class EntityResolver:
         self.canonical_embeddings: Dict[str, np.ndarray] = {}
         self._lookup: Dict[str, str] = {}
         self._llm_confirm_cache: Dict[str, bool] = {}
+        self.exact_only: set = set()  # deterministic table names: exact matches only
         self._embeddings_dirty = True  # set True if canonical_embeddings needs (re)building
 
     @staticmethod
@@ -89,7 +124,7 @@ class EntityResolver:
     def rebuild_embeddings(self):
         """(Re)computes embeddings for every canonical entity that's missing one.
         Called after loading resolver state from disk, and lazily during resolve()."""
-        missing = [c for c in self.canonical_names if c not in self.canonical_embeddings]
+        missing = [c for c in self.canonical_names if c not in self.canonical_embeddings and c not in self.exact_only]
         if not missing:
             self._embeddings_dirty = False
             return
@@ -121,16 +156,26 @@ class EntityResolver:
         self._llm_confirm_cache[cache_key] = result
         return result
 
-    def resolve(self, raw_name: str, type_: str = "Other", description: str = "") -> str:
+    def resolve(self, raw_name: str, type_: str = "Other", description: str = "", fuzzy: bool = True) -> str:
+        """fuzzy=False registers unseen names without fuzzy or embedding matching: for
+        deterministically generated table names, where an exact match is the only correct one."""
         norm = _normalize(raw_name)
         key = norm.lower()
         if key in self._lookup:
             return self._lookup[key]
+        if not fuzzy:
+            return self._register(norm, key, type_, description, embed=False)
 
         # Tier 1: string fuzzy match
         best, best_score = None, 0.0
         for canon in self.canonical_names:
-            score = _similar(norm, canon)
+            if not _mergeable(norm, canon):
+                continue
+            matcher = SequenceMatcher(None, _match_form(norm), _match_form(canon))
+            # Cheap upper bounds first: most pairs cannot reach the merge threshold.
+            if matcher.real_quick_ratio() < self.string_threshold or matcher.quick_ratio() < self.string_threshold:
+                continue
+            score = matcher.ratio()
             if score > best_score:
                 best, best_score = canon, score
         if best is not None and best_score >= self.string_threshold:
@@ -142,7 +187,7 @@ class EntityResolver:
             if self._embeddings_dirty:
                 self.rebuild_embeddings()
             candidates = [c for c in self.canonical_names if self.canonical_types.get(c) == type_
-                          and c in self.canonical_embeddings]
+                          and c in self.canonical_embeddings and _mergeable(norm, c)]
             if candidates:
                 from .text_embeddings import embed_texts, cosine_sim_matrix
                 query_vec = embed_texts([self._text_repr(norm, type_, description)])
@@ -161,15 +206,22 @@ class EntityResolver:
         except Exception:
             pass  # embedding backend unavailable — fall through to Tier 1 result (new entity)
 
-        # No merge: register as a new canonical entity
+        return self._register(norm, key, type_, description)
+
+    def _register(self, norm, key, type_, description, embed=True):
+        """No merge: a new canonical entity. Unembedded (table) names never become Tier-2 merge
+        targets, so a narrative alias cannot be fuzzily attached to a specific table row."""
         self.canonical_names.append(norm)
         self.canonical_types[norm] = type_
         self.canonical_descriptions[norm] = description or ""
-        try:
-            from .text_embeddings import embed_texts
-            self.canonical_embeddings[norm] = embed_texts([self._text_repr(norm, type_, description)])[0]
-        except Exception:
-            pass
+        if not embed:
+            self.exact_only.add(norm)
+        else:
+            try:
+                from .text_embeddings import embed_texts
+                self.canonical_embeddings[norm] = embed_texts([self._text_repr(norm, type_, description)])[0]
+            except Exception:
+                pass
         self._lookup[key] = norm
         return norm
 
@@ -189,29 +241,53 @@ class GraphStore:
             self.chunks[c["chunk_id"]] = {"doc_id": c["doc_id"], "text": c["text"]}
 
         for res in extraction_results:
+            declared = {}
+            # Table metric names are deterministic, so only exact matches are correct; the table's
+            # company still resolves fuzzily, linking table facts to the narrative's "Delta Air Lines".
+            table = res.chunk_id.endswith("::tables")
             for ent in res.entities:
-                canon = self.resolver.resolve(ent.name, ent.type, ent.description or "")
-                if self.graph.has_node(canon):
-                    node = self.graph.nodes[canon]
-                    node["source_docs"] = sorted(set(node.get("source_docs", [])) | {res.doc_id})
-                    if ent.description and len(ent.description) > len(node.get("description") or ""):
-                        node["description"] = ent.description
-                else:
-                    self.graph.add_node(
-                        canon, type=ent.type, description=ent.description or "",
-                        source_docs=[res.doc_id],
-                    )
+                canon = self.resolver.resolve(ent.name, ent.type, ent.description or "",
+                                              fuzzy=not table or ent.type == "Company")
+                declared[ent.name.strip().lower()] = ent.type
+                self._add_node(canon, ent.type, ent.description or "", res.doc_id)
             for tr in res.triples:
-                s = self.resolver.resolve(tr.subject)
-                o = self.resolver.resolve(tr.object)
-                if not self.graph.has_node(s):
-                    self.graph.add_node(s, type="Other", description="", source_docs=[tr.doc_id])
-                if not self.graph.has_node(o):
-                    self.graph.add_node(o, type="Other", description="", source_docs=[tr.doc_id])
+                subject_type = declared.get(tr.subject.strip().lower(), "Other")
+                s = self.resolver.resolve(tr.subject, subject_type, fuzzy=not table or subject_type == "Company")
+                self._add_node(s, subject_type, "", tr.doc_id)
+                if declared.get(tr.object.strip().lower()) not in ("Company", "Segment", "Person") and is_literal(tr.object):
+                    # A value is a fact about its subject. As a shared node, "$100.00" or "2003"
+                    # would link every unrelated metric that happens to share it.
+                    self.graph.nodes[s].setdefault("values", []).append({
+                        "predicate": tr.predicate, "value": tr.object.strip(), "doc_id": tr.doc_id,
+                        "chunk_id": tr.chunk_id, "evidence": tr.evidence})
+                    continue
+                o = self.resolver.resolve(tr.object, declared.get(tr.object.strip().lower(), "Other"))
+                self._add_node(o, declared.get(tr.object.strip().lower(), "Other"), "", tr.doc_id)
                 self.graph.add_edge(
                     s, o, predicate=tr.predicate, doc_id=tr.doc_id,
                     chunk_id=tr.chunk_id, evidence=tr.evidence,
                 )
+
+    def _add_node(self, name, type_, description, doc_id):
+        if self.graph.has_node(name):
+            node = self.graph.nodes[name]
+            node["source_docs"] = sorted(set(node.get("source_docs", [])) | {doc_id})
+            if description and len(description) > len(node.get("description") or ""):
+                node["description"] = description
+            if node.get("type") in (None, "Other") and type_ != "Other":
+                node["type"] = type_
+        else:
+            self.graph.add_node(name, type=type_, description=description, source_docs=[doc_id], values=[])
+
+    def chunk_ids_of(self, node) -> set:
+        """Chunks that ground a node: those cited by its edges and by its value facts."""
+        data = self.graph.nodes[node]
+        ids = {v["chunk_id"] for v in data.get("values", []) if v.get("chunk_id")}
+        for _, _, edge in self.graph.in_edges(node, data=True):
+            ids.add(edge.get("chunk_id"))
+        for _, _, edge in self.graph.out_edges(node, data=True):
+            ids.add(edge.get("chunk_id"))
+        return {i for i in ids if i in self.chunks}
 
     def stats(self) -> dict:
         return {
@@ -230,6 +306,7 @@ class GraphStore:
                 "canonical_types": self.resolver.canonical_types,
                 "canonical_descriptions": self.resolver.canonical_descriptions,
                 "lookup": self.resolver._lookup,
+                "exact_only": sorted(self.resolver.exact_only),
             }, f)
 
     @classmethod
@@ -250,6 +327,7 @@ class GraphStore:
             resolver.canonical_types = meta.get("canonical_types", {})
             resolver.canonical_descriptions = meta.get("canonical_descriptions", {})
             resolver._lookup = meta.get("lookup", {})
+            resolver.exact_only = set(meta.get("exact_only", []))
         # embeddings are rebuilt lazily on first resolve() call in this session
         return cls(graph=graph, chunks=chunks, resolver=resolver)
 

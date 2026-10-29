@@ -11,6 +11,18 @@ sys.path.insert(0, str(ROOT.parent / "backend"))
 from prepare_finqa import digest
 
 
+def metric_name(dataset):
+    from numeric_scoring import VERSION
+    return f"shared_numeric_{VERSION.removeprefix('finqa_')}_text_judge_v1" if dataset == "shared_finqa" else "blinded_llm_judge_0_to_5"
+
+
+def checkpoint_signature(meta, bundle):
+    """Checkpoints are reused only for the same run metadata, question bundle and LLM endpoint."""
+    from app import config
+    return digest({"meta": meta, "bundle": bundle["fingerprint"], "endpoint": config.OLLAMA_HOST if config.LLM_BACKEND == "ollama" else config.API_BASE_URL,
+                   "thinking": config.NVIDIA_THINKING if config.LLM_BACKEND == "api" else False})
+
+
 def choose_frozen(policy, context):
     return max(policy.arms, key=lambda arm: policy.predicted_reward(arm, context))
 
@@ -52,7 +64,7 @@ def main():
         raise ValueError("Shared QA is not generated yet; run prepare_shared_benchmark.py")
     meta = {**benchmark.metadata(), "dataset": manifest["dataset"], "split": args.split,
             "dataset_fingerprint": manifest["fingerprint"], "source_revision": manifest["source_revision"],
-            "metric": "shared_numeric_scalar_v1_text_judge_v1" if manifest["dataset"] == "shared_finqa" else "blinded_llm_judge_0_to_5"}
+            "metric": metric_name(manifest["dataset"])}
     policy = LinUCBBandit.load(args.policy) if args.policy else None
     if policy is not None:
         validate_policy(policy, manifest, meta)
@@ -62,8 +74,7 @@ def main():
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     marker = config.DATA_DIR / "public_ingestion_manifest.json"
     for bundle in manifest["splits"][args.split]["bundles"]:
-        signature = digest({"meta": meta, "bundle": bundle["fingerprint"], "endpoint": config.OLLAMA_HOST if config.LLM_BACKEND == "ollama" else config.API_BASE_URL,
-                            "thinking": config.NVIDIA_THINKING if config.LLM_BACKEND == "api" else False})
+        signature = checkpoint_signature(meta, bundle)
         paths = {q["id"]: checkpoint_dir / (hashlib.sha256(q["id"].encode()).hexdigest() + ".json") for q in bundle["questions"]}
         cached = {}
         for qid, path in paths.items():

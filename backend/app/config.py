@@ -33,8 +33,21 @@ EXTRACTION_MODEL = os.environ.get("LEDGER_EXTRACTION_MODEL", DEFAULT_MODEL)
 ANSWER_MODEL = os.environ.get("LEDGER_ANSWER_MODEL", DEFAULT_MODEL)
 QUESTION_MODEL = os.environ.get("LEDGER_QUESTION_MODEL", DEFAULT_MODEL)
 JUDGE_MODEL = os.environ.get("LEDGER_JUDGE_MODEL", DEFAULT_MODEL)
+# Question classification for routing and GraphRAG seeding: a short call on the latency path.
+QUERY_MODEL = os.environ.get("LEDGER_QUERY_MODEL", EXTRACTION_MODEL)
 OLLAMA_REQUEST_TIMEOUT = int(os.environ.get("LEDGER_OLLAMA_TIMEOUT", "900"))
 OLLAMA_NUM_CTX = int(os.environ.get("LEDGER_NUM_CTX", "16384"))
+# Per-model context sizes ("qwen2.5:14b=12288,qwen2.5:7b-instruct=8192"). Ollama reloads a model
+# whenever num_ctx changes, so each model keeps one size across every role it serves.
+NUM_CTX_BY_MODEL = {name.strip(): int(size) for name, _, size in
+                    (item.partition("=") for item in os.environ.get("LEDGER_NUM_CTX_BY_MODEL", "").split(",") if "=" in item)}
+
+
+def num_ctx(model):
+    return NUM_CTX_BY_MODEL.get(model, OLLAMA_NUM_CTX)
+
+
+
 OLLAMA_KEEP_ALIVE = os.environ.get("LEDGER_KEEP_ALIVE", "5m")
 EXTRACTION_CONCURRENCY = int(os.environ.get("LEDGER_EXTRACTION_CONCURRENCY", "1"))
 EXTRACTION_MAX_TOKENS = int(os.environ.get("LEDGER_EXTRACTION_MAX_TOKENS", "4096"))
@@ -51,7 +64,10 @@ VECTOR_TOP_K = 6
 HYBRID_CANDIDATES = 20
 HYBRID_TOP_K = 6
 RRF_K = 60
-RETRIEVAL_VERSION = "pure_graph_vector_bm25_rrf_v1"
+# v2: deterministic tables, value facts on nodes, relevance-ranked graph context, grounded global search.
+RETRIEVAL_VERSION = "graph_v2_vector_bm25_rrf_v2"
+GRAPH_CONTEXT_CHARS = int(os.environ.get("LEDGER_GRAPH_CONTEXT_CHARS", "14000"))
+COMMUNITY_SUMMARY_LIMIT = int(os.environ.get("LEDGER_COMMUNITY_SUMMARY_LIMIT", "80"))
 
 # Cost estimation for live metrics. Hosted APIs bill per token; self-hosted Ollama bills GPU time
 # (default: AWS g5.xlarge on-demand, enough for qwen2.5:14b Q4).
