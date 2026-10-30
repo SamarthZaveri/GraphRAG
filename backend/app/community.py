@@ -22,13 +22,17 @@ from typing import Dict, List, Tuple
 
 import networkx as nx
 
-from . import config
+from concurrent.futures import ThreadPoolExecutor
+
+from . import config, telemetry
 from .graph_store import GraphStore
 from . import workspace
 from .models import CommunitySummary
 from .llm_client import chat_json
 
 LEIDEN_RESOLUTIONS_TO_TRY = [0.5, 0.75, 1.0, 1.25, 1.5]
+VALUES_PER_MEMBER = 6
+SUMMARY_INPUT_CHARS = 12000
 
 
 def _build_undirected(graph: nx.MultiDiGraph) -> nx.Graph:
@@ -114,17 +118,21 @@ def summarize_community(members: List[str], graph: nx.MultiDiGraph) -> dict:
     for n in members:
         data = graph.nodes[n]
         lines.append(f"- {n} ({data.get('type', 'Other')}): {data.get('description', '')}")
+        # Figures live on nodes as values; a few per member keep summaries quantitative.
+        for value in data.get("values", [])[:VALUES_PER_MEMBER]:
+            lines.append(f"    {value['predicate']}: {value['value']} (source: {value['doc_id']})")
     lines.append("\nRelationships:")
     seen = set()
-    for u, v, data in graph.edges(data=True):
-        if u in members and v in members:
+    member_set = set(members)
+    for u, v, data in graph.subgraph(member_set).edges(data=True):
+        if u in member_set and v in member_set:
             key = (u, data.get("predicate"), v)
             if key in seen:
                 continue
             seen.add(key)
             lines.append(f"- {u} --[{data.get('predicate')}]--> {v} (source: {data.get('doc_id')})")
 
-    result = chat_json(config.EXTRACTION_MODEL, SUMMARY_SYSTEM_PROMPT, "\n".join(lines), max_tokens=500)
+    result = chat_json(config.EXTRACTION_MODEL, SUMMARY_SYSTEM_PROMPT, "\n".join(lines)[:SUMMARY_INPUT_CHARS], max_tokens=500)
     if not result:
         return {"title": f"Community ({len(members)} entities)", "summary": ""}
     return result
@@ -136,16 +144,15 @@ def build_community_summaries(store: GraphStore) -> List[CommunitySummary]:
     for node, cid in membership.items():
         groups.setdefault(cid, []).append(node)
 
-    summaries = []
-    for cid, members in groups.items():
-        if len(members) < 2:
-            continue  # skip singleton "communities", not useful for global search
-        result = summarize_community(members, store.graph)
-        summaries.append(CommunitySummary(
-            community_id=cid, level=0, members=members,
-            title=result.get("title", f"Community {cid}"),
-            summary=result.get("summary", ""),
-        ))
+    # Singletons are not useful for global search; beyond the limit the largest communities are
+    # kept, since summary calls (one LLM call each) dominate post-extraction ingestion time.
+    eligible = sorted(((cid, members) for cid, members in groups.items() if len(members) >= 2),
+                      key=lambda item: -len(item[1]))[:config.COMMUNITY_SUMMARY_LIMIT]
+    with ThreadPoolExecutor(max_workers=max(1, config.EXTRACTION_CONCURRENCY)) as pool:
+        results = list(pool.map(telemetry.bind(lambda item: summarize_community(item[1], store.graph)), eligible))
+    summaries = [CommunitySummary(community_id=cid, level=0, members=members,
+                                  title=result.get("title", f"Community {cid}"), summary=result.get("summary", ""))
+                 for (cid, members), result in zip(eligible, results)]
 
     if len(summaries) > 1:
         summaries.append(build_root_summary(summaries))

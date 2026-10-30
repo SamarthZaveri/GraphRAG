@@ -16,7 +16,8 @@ from html.parser import HTMLParser
 
 BLOCK_TAGS = {"p", "div", "br", "li", "ul", "ol", "h1", "h2", "h3", "h4", "h5", "h6", "section", "article", "center"}
 SKIP_TAGS = {"script", "style", "head", "title", "noscript"}
-VALUE_RE = re.compile(r"^\(?\s*[$€£]?\s*[-–—]?\s*\d[\d,]*(?:\.\d+)?\s*\)?\s*(?:%|x|pts?|bps)?$", re.I)
+VALUE_RE = re.compile(r"^[\s($€£]*[-–—]?\s*\d[\d,]*(?:\.\d+)?\s*\)?\s*(?:%|x|pts?|bps)?\s*\)?$", re.I)
+YEAR_RE = re.compile(r"^(19|20)\d{2}$")
 DASHES = {"-", "–", "—", "——", "n/m", "nm", "*"}
 GENERIC_LABELS = re.compile(r"^(total|subtotal|other|net|adjusted|as reported|change|% change)\b", re.I)
 
@@ -119,7 +120,12 @@ def render_table(rows):
     if not rows:
         return ""
     grids = [_merge_fragments(_grid(row)) for row in rows]
-    is_data = [any(is_value(t) for c, s, t in g[1:]) or (len(g) > 1 and is_value(g[-1][2])) for g in grids]
+
+    def data_row(g):
+        values = [t for _, _, t in g[1:] if is_value(t)]
+        # A row of bare years ("2026 | 2025") is a column header, not figures.
+        return bool(values) and not all(YEAR_RE.match(t) for t in values)
+    is_data = [data_row(g) for g in grids]
     if not any(is_data):
         # Layout table (or a text box): keep its text as prose.
         return "\n\n".join(" ".join(t for _, _, t in g) for g in grids if g)

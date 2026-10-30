@@ -140,7 +140,7 @@ def test_three_arm_training_and_legacy_reward_rejection(tmp_path):
 
 def test_api_selects_hybrid_and_comparison_includes_all_three():
     from app import main, models
-    def response(engine, question, mode="auto"):
+    def response(engine, question, mode="auto", classification=None):
         return models.QueryResponse(question=question, mode_used="local", answer=engine, citations=[])
     with patch.object(main.engines, "answer_question", side_effect=response):
         result = main.query(models.QueryRequest(question="Q?", engine="hybrid_rag"))
@@ -240,9 +240,10 @@ def test_extraction_truncation_retries_are_bounded(isolated_extraction_cache):
     from app import config, extraction, llm_client
     chunk = {"doc_id": "a", "chunk_id": "a::chunk0", "text": "Revenue was 10 million."}
     with patch.object(config, "EXTRACTION_MAX_TOKENS", 4096), patch.object(config, "EXTRACTION_TOKEN_LIMIT", 10000), patch.object(extraction, "chat_json", side_effect=llm_client.OutputTruncatedError("truncated")) as chat:
-        with pytest.raises(llm_client.OutputTruncatedError, match="a::chunk0 at 10000"):
-            extraction.extract_from_chunk(chunk)
+        result = extraction.extract_from_chunk(chunk)
+    # A short passage gets bounded larger budgets, then is skipped rather than aborting ingestion.
     assert [call.kwargs["max_tokens"] for call in chat.call_args_list] == [4096, 8192, 10000]
+    assert result.entities == [] and result.triples == []
 
 
 def test_extraction_does_not_retry_other_llm_errors_with_more_tokens(isolated_extraction_cache):

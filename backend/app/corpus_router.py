@@ -114,9 +114,12 @@ def _policy_matches_config(bandit: LinUCBBandit) -> bool:
     """The policy's rewards were earned by a specific retrieval pipeline and model, so serving must
     use the same ones. The transport (local Ollama vs a hosted API) may differ: same model family."""
     meta = bandit.metadata
+    # The query model produces the category feature; older policies classified with the extraction model.
+    trained_query_model = meta.get("query_model") or meta.get("extraction_model")
     return (meta.get("retrieval_version") == config.RETRIEVAL_VERSION
             and canonical_model(meta.get("answer_model")) == canonical_model(config.ANSWER_MODEL)
-            and canonical_model(meta.get("extraction_model")) == canonical_model(config.EXTRACTION_MODEL))
+            and canonical_model(meta.get("extraction_model")) == canonical_model(config.EXTRACTION_MODEL)
+            and canonical_model(trained_query_model) == canonical_model(config.QUERY_MODEL))
 
 
 def policy_status() -> dict:
@@ -162,7 +165,7 @@ def route_query_details(question: str) -> dict:
 
     try:
         doc_features = router_features.extract_features(store)
-        category, _entities = query_engine.classify_query(question)
+        category, entities = query_engine.classify_query(question)
         context = router_features.build_query_context(doc_features, category)
 
         bandit = LinUCBBandit.load(QUERY_BANDIT_PATH)
@@ -180,7 +183,7 @@ def route_query_details(question: str) -> dict:
                   f"graphrag={rewards.get('graphrag', 0):.2f}, "
                   f"vector_rag={rewards.get('vector_rag', 0):.2f}, "
                   f"hybrid_rag={rewards.get('hybrid_rag', 0):.2f}")
-        return {"engine": engine, "reason": reason, "source": "bandit", "category": category,
+        return {"engine": engine, "reason": reason, "source": "bandit", "category": category, "entities": entities,
                 "predicted_rewards": {arm: round(r, 4) for arm, r in rewards.items()},
                 "policy": {k: bandit.metadata.get(k) for k in ("dataset", "split", "dataset_fingerprint")}}
     except Exception:

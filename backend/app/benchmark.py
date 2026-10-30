@@ -20,7 +20,8 @@ def load_questions():
 def metadata():
     return {"retrieval_version": config.RETRIEVAL_VERSION, "llm_backend": config.LLM_BACKEND,
             "answer_model": config.ANSWER_MODEL, "question_model": config.QUESTION_MODEL,
-            "judge_model": config.JUDGE_MODEL, "extraction_model": config.EXTRACTION_MODEL}
+            "judge_model": config.JUDGE_MODEL, "extraction_model": config.EXTRACTION_MODEL,
+            "query_model": config.QUERY_MODEL}
 
 
 JUDGE_SYSTEM_PROMPT = """Grade anonymized financial answers against the reference and its evidence.

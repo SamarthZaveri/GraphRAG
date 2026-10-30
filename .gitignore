@@ -42,3 +42,8 @@ outputs/
 
 # Local API credentials
 /secrets.txt
+
+# MLflow experiment tracking (local store)
+RL/mlflow.db
+RL/mlruns/
+mlruns/

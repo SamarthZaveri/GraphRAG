@@ -86,7 +86,7 @@ def test_shared_numeric_bypasses_judge_and_exports_train_rewards(tmp_path, monke
     response = Mock(answer="FINAL_NUMERIC_ANSWER: 10", model_dump=Mock(return_value={"answer": "10"}))
     with patch.object(main, "_ingest_documents"), patch.object(GraphStore, "load"), patch.object(router_features, "extract_features", return_value=np.array([0, .1, .1, 1])), patch.object(query_engine, "classify_query", return_value=("local", [])), patch.object(engines, "answer_question", return_value=response), patch.object(benchmark, "judge_answers", side_effect=AssertionError("numeric must not call judge")):
         runner.main()
-    summary = json.loads((output / "train/summary.json").read_text())
+    summary = json.loads((output / "shared_finqa/train/summary.json").read_text())
     assert summary["by_task"]["numeric"]["engine_rewards"]["graphrag"] == 1
 
 
@@ -110,7 +110,6 @@ def test_shared_weights_balance_numeric_and_four_text_categories(tmp_path):
     ("missing_engine", "reward"),
     ("invalid_context", "context"),
     ("missing_category", "all four"),
-    ("obsolete_dataset", "shared-source"),
 ])
 def test_shared_training_rejects_incompatible_rewards(tmp_path, problem, message):
     meta = {**benchmark.metadata(), "dataset": "shared_finqa", "split": "train", "dataset_fingerprint": "shared"}
@@ -128,9 +127,6 @@ def test_shared_training_rejects_incompatible_rewards(tmp_path, problem, message
         rows[0]["context"][0] = float("nan")
     elif problem == "missing_category":
         rows.pop()
-    elif problem == "obsolete_dataset":
-        for row in rows:
-            row["metadata"]["dataset"] = "combined"
     path = tmp_path / "query_results.jsonl"
     path.write_text("".join(json.dumps(r) + "\n" for r in rows))
     (tmp_path / "summary.json").write_text(json.dumps({"complete": problem != "incomplete"}))

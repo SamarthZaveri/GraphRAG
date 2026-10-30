@@ -65,7 +65,7 @@ HYBRID_CANDIDATES = 20
 HYBRID_TOP_K = 6
 RRF_K = 60
 # v2: deterministic tables, value facts on nodes, relevance-ranked graph context, grounded global search.
-RETRIEVAL_VERSION = "graph_v2_vector_bm25_rrf_v2"
+RETRIEVAL_VERSION = "graph_v2_full_rank_vector_bm25_rrf_v2"
 GRAPH_CONTEXT_CHARS = int(os.environ.get("LEDGER_GRAPH_CONTEXT_CHARS", "14000"))
 COMMUNITY_SUMMARY_LIMIT = int(os.environ.get("LEDGER_COMMUNITY_SUMMARY_LIMIT", "80"))
 
@@ -75,7 +75,7 @@ PRICE_INPUT_PER_M = float(os.environ.get("LEDGER_PRICE_INPUT_PER_M", "0"))
 PRICE_OUTPUT_PER_M = float(os.environ.get("LEDGER_PRICE_OUTPUT_PER_M", "0"))
 GPU_HOURLY_USD = float(os.environ.get("LEDGER_GPU_HOURLY_USD", "1.006"))
 METRICS_DB_PATH = DATA_DIR / "metrics.sqlite3"
-RL_RESULTS_DIR = Path(os.environ.get("LEDGER_RL_RESULTS_DIR", str(BACKEND_ROOT.parent / "RL" / "data" / "local-14b"))).resolve()
+RL_RESULTS_DIR = Path(os.environ.get("LEDGER_RL_RESULTS_DIR", str(BACKEND_ROOT.parent / "RL" / "data" / "runs" / "mixed"))).resolve()
 
 # Upload guardrails (the frontend reads these from /api/status).
 MAX_UPLOAD_FILES = int(os.environ.get("LEDGER_MAX_UPLOAD_FILES", "5"))

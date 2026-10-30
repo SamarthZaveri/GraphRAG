@@ -36,7 +36,9 @@ RGCN_EXPANSION_K = 4
 GLOBAL_TOP_N_COMMUNITIES = 4
 GRAPH_CHUNK_TOP_K = 4
 GRAPH_FACT_TOP_K = 40
-MAX_CANDIDATE_FACTS = 800
+# A safety bound only: embeddings are cached, so the whole neighborhood is ranked. (A cap of 800
+# used to drop facts by discovery order, not relevance, on large EDGAR graphs.)
+MAX_CANDIDATE_FACTS = 8000
 CHUNKS_PER_COMMUNITY = 2
 
 # Real 12-corpus, 70-question evaluation found GraphRAG's worst losses
@@ -193,6 +195,17 @@ def _candidate_facts(store: GraphStore, nodes: set) -> List[Tuple[str, str, str,
                 facts.append((f"- {n} | {value['predicate']}: {value['value']}  (source: {value['doc_id']}; {value.get('evidence') or ''})",
                               value.get("chunk_id"), value.get("doc_id"), n))
     return facts
+
+
+def warm_embeddings(store: GraphStore) -> int:
+    """Embed every fact and chunk once after ingestion, as vector RAG indexes its chunks, so
+    query latency measures search rather than first-use embedding. Returns the text count."""
+    from .text_embeddings import embed_texts
+    texts = [f[0] for f in _candidate_facts(store, set(store.graph.nodes()))]
+    texts += [c["text"] for c in store.chunks.values() if c.get("text")]
+    for start in range(0, len(texts), 512):
+        embed_texts(texts[start:start + 512])
+    return len(texts)
 
 
 def _local_context(question: str, store: GraphStore, seed_entities: List[str]):

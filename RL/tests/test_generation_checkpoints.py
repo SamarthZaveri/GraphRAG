@@ -205,3 +205,15 @@ def test_focused_source_budget_preserves_selected_document_context():
     assert len(context) <= 2400
     assert "First plan amendment" in context and "Second plan amendment" in context
     assert all(e["quote"] in texts[0] for e in active.values())
+
+
+def test_source_passages_keep_table_rows_whole_and_skip_boilerplate():
+    import generate_benchmark as generator
+    rows = "\n".join(f"TABLE ROW Metric {i} | Three Months Ended June 30, 2026: {i},000 ; Three Months Ended June 30, 2025: {i},500" for i in range(12))
+    text = "Revenue grew strongly.\n\n" + rows + "\n\nThis release contains forward-looking statements within the safe harbor."
+    passages = generator.source_passages(text)
+    assert all(p in text for p in passages)
+    assert not any("safe harbor" in p for p in passages)
+    table = [line for p in passages for line in p.split("\n") if line.startswith("TABLE")]
+    assert table == rows.split("\n")
+    assert all(line.startswith("TABLE ROW") for p in passages[1:] for line in p.split("\n"))

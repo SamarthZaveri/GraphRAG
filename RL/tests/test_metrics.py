@@ -44,7 +44,7 @@ def test_threads_report_into_the_callers_trace():
 
 def test_query_attaches_metrics_and_persists_summary():
     from app import main, models, metrics_store
-    def response(engine, question, mode="auto"):
+    def response(engine, question, mode="auto", classification=None):
         from app import telemetry
         telemetry.record_llm_call("m", 0.5, 100, 20)
         return models.QueryResponse(question=question, mode_used="local", answer="Revenue rose [doc_a].",

@@ -1,8 +1,12 @@
 """Statistical analysis of a benchmark split: engine and router rewards with
-bootstrap confidence intervals, routing behaviour, retrieval hit rates and
-abstention. Reads <run>/<split>/results.json and writes <run>/<split>/analysis.json.
+bootstrap confidence intervals, routing behaviour, retrieval hit rates, abstention
+and per-policy latency.
 
-Usage: python RL/analyze_results.py --run-dir RL/data/local-14b --split dev"""
+Reads every <run>/<dataset>/<split>/results.json, writes each dataset's analysis.json
+next to it, and writes the combined view (with a by_dataset breakdown) plus combined
+summary.json/results.json to <run>/<split>/, which the UI reads.
+
+Usage: python RL/analyze_results.py --run-dir RL/data/runs/mixed --split dev"""
 from __future__ import annotations
 import argparse
 import json
@@ -13,6 +17,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from app.engines import ENGINE_NAMES
 from app.telemetry import ABSTAIN_PATTERN
 
@@ -118,21 +123,70 @@ def analyze(records, gold, seed=0):
     result["retrieval"] = {e: retrieval_metrics(records, e, gold) for e in ENGINE_NAMES}
     result["abstention_rate"] = {e: round(float(np.mean([bool(ABSTAIN_PATTERN.search(r["answers"][e]["answer"] or ""))
                                                           for r in records])), 4) for e in ENGINE_NAMES}
+    result["latency_ms"] = policy_latency(records, routed)
     return result
 
 
+def policy_latency(records, routed):
+    """Mean answer latency each policy would incur: the cost side of choosing an engine."""
+    def latency(r, engine):
+        return ((r.get("telemetry") or {}).get(engine) or {}).get("latency_ms")
+    out = {}
+    for name, pick in [(f"always_{e}", lambda r, e=e: e) for e in ENGINE_NAMES] + ([("router", lambda r: r["router_engine"])] if routed else []):
+        values = [latency(r, pick(r)) for r in records]
+        values = [v for v in values if v is not None]
+        out[name] = round(float(np.mean(values)), 1) if values else None
+    return out
+
+
+def datasets_in(run_dir, split):
+    # <run>/<dataset>/<split>/results.json; the combined <run>/<split>/results.json is not a dataset.
+    return sorted(p.parent.parent.name for p in run_dir.glob(f"*/{split}/results.json")
+                  if p.parent.parent.parent == run_dir and p.parent.parent.name not in ("train", "dev", "test"))
+
+
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--run-dir", type=Path, default=Path("RL/data/local-14b"))
-    parser.add_argument("--dataset-dir", type=Path, default=Path("RL/data/shared_finqa"))
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--run-dir", type=Path, default=Path(__file__).resolve().parent / "data" / "runs" / "mixed")
+    parser.add_argument("--data-root", type=Path, default=Path(__file__).resolve().parent / "data",
+                        help="Folder holding each dataset's directory (named as the dataset) with manifest.json")
     parser.add_argument("--split", choices=("train", "dev", "test"), required=True)
     args = parser.parse_args()
-    records = json.loads((args.run_dir / args.split / "results.json").read_text())
-    manifest = json.loads((args.dataset_dir / "manifest.json").read_text(encoding="utf-8-sig"))
-    result = {"split": args.split, "metadata": records[0]["metadata"] if records else None,
-              **analyze(records, gold_docs(manifest, args.split))}
-    (args.run_dir / args.split / "analysis.json").write_text(json.dumps(result, indent=2))
-    print(json.dumps(result, indent=2))
+    from run_public_benchmark import summarize
+    import tracking
+    names = datasets_in(args.run_dir, args.split)
+    if not names:
+        raise SystemExit(f"No {args.split} results under {args.run_dir}/<dataset>/{args.split}")
+    combined, gold, summaries, by_dataset = [], {}, [], {}
+    for name in names:
+        folder = args.run_dir / name / args.split
+        records = json.loads((folder / "results.json").read_text())
+        dataset_gold = gold_docs(json.loads((args.data_root / name / "manifest.json").read_text(encoding="utf-8-sig")), args.split)
+        analysis = {"split": args.split, "dataset": name, "metadata": records[0]["metadata"] if records else None,
+                    **analyze(records, dataset_gold)}
+        (folder / "analysis.json").write_text(json.dumps(analysis, indent=2))
+        by_dataset[name] = {k: analysis[k] for k in ("n", "policies", "best_single_engine", "outright_wins", "router",
+                                                       "engine_vs_best", "latency_ms", "abstention_rate") if k in analysis}
+        combined += records
+        gold.update(dataset_gold)
+        summaries.append(json.loads((folder / "summary.json").read_text()))
+    # The combined view feeds the UI and the headline numbers; per-dataset blocks show where routing matters.
+    first = combined[0]["metadata"]
+    meta = {**first, "dataset": "+".join(names), "dataset_fingerprint": None,
+            "datasets": {s["metadata"]["dataset"]: s["metadata"]["dataset_fingerprint"] for s in summaries}}
+    routed = all("router_engine" in r for r in combined)
+    summary = summarize(combined, meta, sum(s["expected"] for s in summaries),
+                        [f for s in summaries for f in s["failed_questions"]], policy=routed or None,
+                        ingestion={k: v for s in summaries for k, v in (s.get("ingestion") or {}).items()})
+    result = {"split": args.split, "metadata": meta, **analyze(combined, gold), "by_dataset": by_dataset}
+    out = args.run_dir / args.split
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "analysis.json").write_text(json.dumps(result, indent=2))
+    (out / "summary.json").write_text(json.dumps(summary, indent=2))
+    (out / "results.json").write_text(json.dumps(combined, indent=2))
+    tracking.log_analysis(args.run_dir, args.split, result, out / "analysis.json")
+    print(json.dumps({"datasets": names, "policies": result["policies"], "router": result.get("router"),
+                      "by_dataset": {n: d["policies"] for n, d in by_dataset.items()}}, indent=2))
 
 
 if __name__ == "__main__":

@@ -79,12 +79,16 @@ def test_public_runner_train_and_frozen_dev_end_to_end(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "DATA_DIR", runtime)
     monkeypatch.setenv("LEDGER_DATA_DIR", str(runtime))
     scores = {e: {"score": i+1, "rationale": "Checked reference"} for i, e in enumerate(engines.ENGINE_NAMES)}
-    responses = {e: Mock(model_dump=Mock(return_value={"answer": "20%"})) for e in engines.ENGINE_NAMES}
+    response = Mock(model_dump=Mock(return_value={"answer": "20%", "citations": []}))
     args = ["runner", "--dataset-dir", str(dataset), "--output-dir", str(output)]
-    with patch.object(main, "_ingest_documents"), patch.object(GraphStore, "load"), patch.object(router_features, "extract_features", return_value=np.array([0, .1, .1, 1])), patch.object(query_engine, "classify_query", return_value=("multi_hop", [])), patch.object(benchmark, "evaluate_question", return_value=(responses, scores)) as evaluate:
+    with patch.object(main, "_ingest_documents"), patch.object(GraphStore, "load"), patch.object(router_features, "extract_features", return_value=np.array([0, .1, .1, 1])), patch.object(query_engine, "classify_query", return_value=("multi_hop", ["A"])), patch.object(engines, "answer_question", return_value=response) as answer, patch.object(benchmark, "judge_answers", return_value=scores) as judge:
         monkeypatch.setattr(sys, "argv", args + ["--split", "train"])
         runner.main()
-        train = json.loads((output / "train" / "query_results.jsonl").read_text())
+        # Every engine answers each question; only GraphRAG reuses the single classification.
+        assert answer.call_count == len(engines.ENGINE_NAMES)
+        graph_call = next(c for c in answer.call_args_list if c.args[0] == "graphrag")
+        assert graph_call.kwargs["classification"] == ("multi_hop", ["A"])
+        train = json.loads((output / "finqa" / "train" / "query_results.jsonl").read_text())
         policy = LinUCBBandit(8, list(engines.ENGINE_NAMES))
         policy.metadata = train["metadata"]
         policy_path = tmp_path / "policy.json"
@@ -92,12 +96,12 @@ def test_public_runner_train_and_frozen_dev_end_to_end(tmp_path, monkeypatch):
         before = policy_path.read_bytes()
         monkeypatch.setattr(sys, "argv", args + ["--split", "dev", "--policy", str(policy_path)])
         runner.main()
-        assert json.loads((output / "dev" / "summary.json").read_text())["complete"]
+        assert json.loads((output / "finqa" / "dev" / "summary.json").read_text())["complete"]
         assert policy_path.read_bytes() == before
-        assert not (output / "dev" / "query_results.jsonl").exists()
-        calls = evaluate.call_count
+        assert not (output / "finqa" / "dev" / "query_results.jsonl").exists()
+        calls = (answer.call_count, judge.call_count)
         runner.main()
-        assert evaluate.call_count == calls  # Matching question checkpoints resume without API calls.
+        assert (answer.call_count, judge.call_count) == calls  # Matching checkpoints resume without LLM calls.
 
 
 

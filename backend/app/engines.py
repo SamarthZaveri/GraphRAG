@@ -2,10 +2,12 @@
 ENGINE_NAMES = ["graphrag", "vector_rag", "hybrid_rag"]
 
 
-def answer_question(engine, question, mode="auto"):
+def answer_question(engine, question, mode="auto", classification=None):
+    """classification is an optional (category, entities) already computed by the router; GraphRAG
+    reuses it instead of classifying the question again."""
     if engine == "graphrag":
         from . import query_engine
-        response = query_engine.answer_question(question, mode=mode)
+        response = query_engine.answer_question(question, mode=mode, classification=classification)
     elif engine == "vector_rag":
         from . import vector_baseline
         response = vector_baseline.answer_question(question)

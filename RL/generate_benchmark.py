@@ -12,6 +12,7 @@ from collections import Counter
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "backend"))
 from app import config
 from app.llm_client import chat_json, LLMError, OutputTruncatedError
+from app.extraction import _BOILERPLATE
 
 CATEGORIES = ("local", "global", "multi_hop", "conflict")
 QUESTIONS_PER_CORPUS = config.QA_PER_CATEGORY * 4
@@ -29,6 +30,45 @@ def corpus_fingerprint(doc_texts, doc_ids):
     return hashlib.sha256(json.dumps(list(zip(doc_ids, doc_texts)), ensure_ascii=False).encode()).hexdigest()
 
 
+def _split_words(text, limit=450):
+    while text:
+        if len(text) <= limit:
+            yield text
+            return
+        boundary = text.rfind(" ", 0, limit + 1)
+        boundary = boundary if boundary > 150 else limit
+        yield text[:boundary]
+        text = text[boundary:].strip()
+
+
+def source_passages(text, limit=450, max_line=900):
+    """Contiguous source passages that never cut a line, so each table row keeps its label
+    and column names (a row split mid-way reads as unlabeled numbers). Lines are grouped up to
+    `limit` chars; only a single line longer than `max_line` is split at word boundaries.
+    Legal and logistics paragraphs are skipped: they cannot support a financial question."""
+    passages = []
+    for paragraph in re.split(r"\n\s*\n", text):
+        paragraph = paragraph.strip()
+        if not paragraph or _BOILERPLATE.search(paragraph):
+            continue
+        start = end = None
+        for line in re.finditer(r"[^\n]+", paragraph):
+            if len(line.group().strip()) > max_line:
+                if start is not None:
+                    passages.append(paragraph[start:end].strip())
+                    start = None
+                passages.extend(_split_words(line.group().strip(), limit))
+            elif start is not None and line.end() - start > limit:
+                passages.append(paragraph[start:end].strip())
+                start, end = line.start(), line.end()
+            else:
+                start = line.start() if start is None else start
+                end = line.end()
+        if start is not None:
+            passages.append(paragraph[start:end].strip())
+    return passages
+
+
 def source_catalog(doc_texts, doc_ids):
     """Number exact source passages so the model can cite without retyping text."""
     if not doc_texts or len(doc_texts) != len(doc_ids) or len(set(doc_ids)) != len(doc_ids):
@@ -38,20 +78,7 @@ def source_catalog(doc_texts, doc_ids):
         raise ValueError("Too many documents for QA input budget; split corpus or increase LEDGER_QA_INPUT_CHARS")
     blocks, catalog = [], {}
     for doc_index, (text, doc_id) in enumerate(zip(doc_texts, doc_ids)):
-        # Preserve original characters and table rows. Split paragraphs into
-        # bounded contiguous passages, using word boundaries for long paragraphs.
-        passages = []
-        for paragraph in re.split(r"\n\s*\n", text):
-            remaining = paragraph.strip()
-            while remaining:
-                if len(remaining) <= 450:
-                    passages.append(remaining)
-                    break
-                boundary = remaining.rfind(" ", 0, 451)
-                boundary = boundary if boundary > 150 else 450
-                passages.append(remaining[:boundary])
-                remaining = remaining[boundary:].strip()
-        passages = [q for q in passages if len(q) >= 15]
+        passages = [q for q in source_passages(text) if len(q) >= 15]
         available = budget - len(doc_id) - 25
         # Spread the selection through the document; each rendered block is
         # included in the character budget, including its citation identifier.
@@ -252,7 +279,8 @@ def generate_benchmark_for_corpus(doc_texts, doc_ids, per_category=None, allow_u
         accepted = [q for q in accepted if q["category"] != category]
         generation_budget = 4096 if config.LLM_BACKEND == "ollama" else 6000
         feedback, attempted = [], []
-        for attempt in range(max(6, target * 4)):
+        # Multi-hop needs two facts and correct arithmetic, so the audit rejects it most often.
+        for attempt in range(max(6, target * (6 if category == "multi_hop" else 4))):
             needed = min(1 if config.LLM_BACKEND == "ollama" else 3, target - len(category_questions))
             if needed <= 0:
                 break

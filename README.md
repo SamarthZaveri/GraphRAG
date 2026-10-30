@@ -1,62 +1,75 @@
 # Ledger: adaptive retrieval over financial reports
 
-The active workflow uses **local Ollama Qwen2.5 14B for every LLM role**:
+Three retrieval engines answer questions over financial filings, and a learned router (LinUCB contextual bandit) picks one per question:
 
-`same FinQA report excerpts/tables -> numeric + text questions -> three RAG answers -> scores -> trained adaptive router -> held-out validation/test`
+- **GraphRAG**: an entity graph built from the filings. Tables are parsed deterministically into one fact per cell; prose goes through LLM extraction. Local search ranks the facts and source chunks in the question's entity neighborhood; global search ranks community summaries and grounds each with its member chunks.
+- **VectorRAG**: dense chunk retrieval (all-MiniLM-L6-v2 in Chroma).
+- **HybridRAG**: BM25 and dense retrieval fused with reciprocal rank fusion.
 
-FinQA's original numeric questions and generated local/global/multi-hop/conflict questions share the exact same document bundles. Only source text/tables enter indexes. Gold answers, programs and generated QA remain outside retrieval. FinQA provides report-page excerpts; this workflow does not fetch complete original filings.
+Two benchmarks share the pipeline, with disjoint train/dev/test splits:
 
-GraphRAG retrieves graph-linked source chunks and community summaries without vector-chunk fallback. VectorRAG uses dense chunk retrieval. Hybrid combines BM25 and dense retrieval through reciprocal rank fusion. All three share the same answer model. The learned LinUCB router selects an engine using document structure and question-only category features; serving uses the trained policy without online updates. GraphRAG currently maps multi-hop/conflict categories to community-summary retrieval rather than dedicated algorithms.
+- `shared_finqa`: FinQA report pages (numeric questions scored exactly, plus generated text questions). Single-page lookups over tables.
+- `edgar_xdoc`: real SEC earnings releases (8-K Item 2.02, Exhibit 99.1). Each corpus is a sector peer group, 3 companies x 2 quarters, so questions genuinely span documents. Splits are disjoint by sector.
 
-## Run locally
+Only source text enters the indexes; gold answers, programs and generated references stay outside retrieval.
 
-Start Ollama, activate the Python environment, and pull the models:
+## Run the experiment locally
+
+Start Ollama and pull both models. For parallel requests, set `OLLAMA_NUM_PARALLEL=4` and `OLLAMA_FLASH_ATTENTION=1` in Ollama's environment and restart it.
 
 ```powershell
 .\venv\Scripts\Activate.ps1
 python -m pip install -r RL/requirements.txt
+ollama pull qwen2.5:7b-instruct
 ollama pull qwen2.5:14b
-. .\scripts\use-ollama.ps1
-python scripts/check_models.py --smoke-test
+$env:LEDGER_SEC_USER_AGENT = "Your Name you@example.com"   # SEC fair-access policy
+.\scripts\run-local-flow.ps1                               # finqa -> edgar -> train -> router -> dev
+.\scripts\run-local-flow.ps1 -StartAt test -Through test   # once, on the final system
 ```
 
-Extraction, query classification, question generation, reference auditing, answering and text judging all use Qwen2.5 14B in separate calls. The helper sets every model role explicitly. Context is 16384 tokens, calls are sequential, and models unload after requests (`keep_alive=0`) to limit simultaneous memory use. Actual speed and memory depend on GPU VRAM and CPU offloading.
+Model profiles (`-Profile`, set by `scripts/use-ollama.ps1`):
 
-Prepare FinQA once (existing downloads/prepared files can be reused), then run the shared-source workflow:
+| Profile | Extraction, classification, answers | Question generation, judge |
+|---|---|---|
+| `mixed` (default) | qwen2.5:7b-instruct | qwen2.5:14b |
+| `7b` | qwen2.5:7b-instruct | qwen2.5:7b-instruct |
+| `14b` | qwen2.5:14b | qwen2.5:14b |
 
-```powershell
-python RL/prepare_finqa.py --train-limit 40 --dev-limit 20 --test-limit 20
-.\scripts\run-local-flow.ps1
-```
+On an 8 GB GPU the 7B runs fully on the GPU (about 40 tokens/s, about 94 tokens/s with 4 parallel requests), while the 14B runs half on the CPU (about 7 tokens/s). `mixed` puts the high-volume work on the 7B, and keeps the 14B where quality matters most: writing and auditing questions, and judging. The judge is then also a different, stronger model than the one answering.
 
-The runner stops after validation by default. Choose settings on dev, then run the final test separately with `scripts/run-local-flow.ps1 -StartAt test -Through test`.
+Each stage checkpoints its work. Resume with `-StartAt finqa|edgar|train|router|dev|test`. Within a bundle, the benchmark ingests, then answers every question with all three engines in parallel, then scores. Answers and scores are checkpointed separately, so changing the judge or the scorer re-scores saved answers without re-answering them.
 
-Results and the trained policy are stored under `RL/data/local-14b`. Each bundle gets 12 custom questions by default; `-PerCategory 5` targets 20 and uses separate dataset/run folders with a `-c5` suffix. The runner stops after failures and accepts `-StartAt prepare|train|router|dev|test` for recovery. Successful generation, extraction and scored questions are checkpointed.
+Results are written to `RL/data/runs/<profile>/`:
+- per dataset: `<dataset>/<split>/{results,summary,analysis}.json`
+- combined, which the UI reads: `<split>/`
+- the policy: `policy.json`
 
-Train/dev/test report separation is established before custom generation. Settings can be chosen on dev; freeze them before interpreting the test results. FinQA retains its numeric question distribution. Custom generation strictly requires the requested count for each category and fails if source evidence is insufficient. The default subsets are small smoke experiments, not reliable production estimates.
+`-LatencyWeight 0.2` trains a cost-aware router: reward = quality − 0.2 × min(latency / 60 s, 1).
 
-Numeric scoring directly compares an explicit final scalar with FinQA's gold execution value, handling percent/ratio and documented scale conversions plus rounding tolerance. It is **custom scalar-answer accuracy, not official FinQA program execution accuracy**. Text answer scores come from a blinded local 14B judge against audited references/evidence. Numeric/text results and text categories are reported separately. Generated references and judge scores need manual review; a 14B judge can still make correlated errors.
+Experiment tracking: every evaluation, router training and analysis is logged to MLflow, with each role's model, retrieval version, metric, dataset fingerprints, rewards, latencies, ingestion cost and output files. View it with `mlflow ui --backend-store-uri sqlite:///RL/mlflow.db`. Set `LEDGER_MLFLOW=0` to turn it off.
 
-Training defaults to 50% numeric weight and 12.5% per text category. Only train rewards update the bandit; held-out evaluation never updates it. The trained artifact is a small JSON policy; LLM weights are not fine-tuned.
+Numeric scoring compares an explicit final scalar with FinQA's gold execution value. It handles percent/ratio forms, the filing's scale and descriptive unit words, within rounding tolerance. It is **custom scalar-answer accuracy, not official FinQA program execution accuracy**. Text answers are scored by a blinded judge against audited references and evidence. Generated references and judge scores still need spot checks.
+
+Router training gives each dataset equal weight. Within FinQA, numeric questions get 50% and each text category 12.5%. Only train rewards update the bandit, and held-out evaluation never does. The trained artifact is a small JSON policy; LLM weights are not fine-tuned.
 
 ## Serve the trained router
 
 Use the model profile that produced the policy:
 
 ```powershell
-. .\scripts\use-ollama.ps1
-Copy-Item RL/data/local-14b/policy.json backend/data/graph_state/query_bandit.json
+. .\scripts\use-ollama.ps1 -Profile mixed
+Copy-Item RL/data/runs/mixed/policy.json backend/data/graph_state/query_bandit.json
 python -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000
 ```
 
-Open http://localhost:8000, ingest application documents, and select automatic routing. A policy does not copy benchmark indexes into app state. Use matching extraction/answer models; the app rejects incompatible policies.
+Open http://localhost:8000, ingest documents and use automatic routing. The app rejects a policy trained with a different retrieval version or models.
 
 For the existing Docker app with Ollama running on your host:
 
 ```powershell
 Copy-Item .env.example .env
 docker compose up --build -d
-docker compose cp RL/data/local-14b/policy.json ledger:/data/graph_state/query_bandit.json
+docker compose cp RL/data/runs/mixed/policy.json ledger:/data/graph_state/query_bandit.json
 ```
 
 Ollama must be reachable from the container; configure its host binding appropriately. The app container stores its indexes in the persistent volume and does not contain model weights.
@@ -65,11 +78,14 @@ Optional R-GCN training requires `python -m pip install -r backend/requirements-
 
 ## Code layout
 
-- `backend/app/`: ingestion, graph construction, retrieval, scoring and app routing.
-- `RL/prepare_finqa.py` and `prepare_shared_benchmark.py`: source bundles and shared numeric/text questions.
-- `RL/run_public_benchmark.py`: three-engine train/validation/test scoring.
-- `RL/train_shared_router.py`: weighted training and policy export.
-- `scripts/run-local-flow.ps1`: the local 14B workflow.
+- `backend/app/`: ingestion, graph construction, retrieval, scoring and app routing. `table_parser.py` and `html_text.py` turn filing tables into deterministic facts.
+- `RL/prepare_finqa.py`, `prepare_shared_benchmark.py`: FinQA bundles with shared numeric and text questions.
+- `RL/prepare_edgar.py`: the cross-document SEC earnings-release benchmark.
+- `RL/run_public_benchmark.py`: three-engine scoring per dataset and split.
+- `RL/train_shared_router.py`: multi-dataset, optionally cost-aware router training.
+- `RL/analyze_results.py`: bootstrap confidence intervals, routing behaviour, latency, per-dataset breakdown.
+- `RL/tracking.py`: MLflow logging. `RL/rescore_numeric.py`: offline re-scoring after a scorer change.
+- `scripts/run-local-flow.ps1`: the end-to-end workflow; `scripts/use-ollama.ps1`: model profiles.
 - `.env.example`: Docker configuration; `backend/requirements-rgcn.txt`: optional graph training dependencies.
 
 ## Verification and details

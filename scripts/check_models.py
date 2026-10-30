@@ -32,7 +32,7 @@ def main():
     args = parser.parse_args()
     if args.timeout <= 0:
         parser.error("--timeout must be positive")
-    models = sorted({config.EXTRACTION_MODEL, config.ANSWER_MODEL, config.QUESTION_MODEL, config.JUDGE_MODEL})
+    models = sorted({config.EXTRACTION_MODEL, config.QUERY_MODEL, config.ANSWER_MODEL, config.QUESTION_MODEL, config.JUDGE_MODEL})
     print(f"Backend: {config.LLM_BACKEND}; default profile: {config.MODEL_PROFILE} (role overrides take precedence)", flush=True)
     print("API credential configured:", bool(config.API_KEY), flush=True)
     try:

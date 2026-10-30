@@ -1,9 +1,10 @@
 """Re-score saved numeric answers under the current numeric scorer, without new LLM calls.
 
-Checkpoints are signed with the run metadata, which includes the metric version, so a scorer
-change would otherwise discard every saved answer. This verifies each checkpoint was made under
-the current LLM setup, re-scores numeric questions (text judge scores are kept), and re-signs it
-under the new metric. Rerun run_public_benchmark.py afterwards to rebuild results and summaries."""
+Scored checkpoints are signed with the metric version, so a scorer change would otherwise make
+run_public_benchmark.py re-score every question (numeric scoring is free, but text questions
+would be re-judged). This verifies each scored checkpoint was made under the current LLM setup,
+re-scores numeric questions (text judge scores are kept) and re-signs it under the new metric.
+Rerun run_public_benchmark.py afterwards to rebuild results and summaries."""
 from __future__ import annotations
 import argparse
 import hashlib
@@ -20,7 +21,7 @@ def rescore_split(manifest, checkpoint_dir):
     from app import engines
     metric = metric_name(manifest["dataset"])
     stats = {"checkpoints": 0, "numeric": 0, "already_current": 0, "flipped": []}
-    for bundle in manifest["splits"][checkpoint_dir.parent.name]["bundles"]:
+    for bundle in manifest["splits"][checkpoint_dir.parent.name]["bundles"]:  # <run>/<dataset>/<split>/questions
         for q in bundle["questions"]:
             path = checkpoint_dir / (hashlib.sha256(q["id"].encode()).hexdigest() + ".json")
             if not path.exists():
@@ -53,12 +54,12 @@ def rescore_split(manifest, checkpoint_dir):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset-dir", type=Path, default=ROOT / "data" / "shared_finqa")
-    parser.add_argument("--output-dir", type=Path, default=ROOT / "data" / "local-14b")
+    parser.add_argument("--output-dir", type=Path, default=ROOT / "data" / "runs" / "mixed")
     parser.add_argument("--splits", nargs="+", default=["train", "dev", "test"], choices=("train", "dev", "test"))
     args = parser.parse_args()
     manifest = json.loads((args.dataset_dir / "manifest.json").read_text())
     for split in args.splits:
-        checkpoint_dir = args.output_dir / split / "questions"
+        checkpoint_dir = args.output_dir / manifest["dataset"] / split / "questions"
         if not checkpoint_dir.exists():
             print(f"{split}: no checkpoints")
             continue

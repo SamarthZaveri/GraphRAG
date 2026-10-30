@@ -22,3 +22,9 @@ def _isolated_guardrails(tmp_path, monkeypatch):
     from app import config, guard
     guard.limiter.hits.clear()
     monkeypatch.setattr(config, "WORKSPACES_DIR", tmp_path / "workspaces")
+
+
+@pytest.fixture(autouse=True)
+def _no_experiment_tracking(monkeypatch):
+    """Benchmark tests must not write runs into the real MLflow store."""
+    monkeypatch.setenv("LEDGER_MLFLOW", "0")

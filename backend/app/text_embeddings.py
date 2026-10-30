@@ -18,7 +18,8 @@ this adds no new package and no new network dependency beyond the one-time
 model download Chroma already does.
 """
 from __future__ import annotations
-from typing import List
+import threading
+from typing import Dict, List
 
 import numpy as np
 
@@ -33,13 +34,32 @@ def get_embedder():
     return _embedder
 
 
+_cache: Dict[str, np.ndarray] = {}
+_cache_lock = threading.Lock()
+CACHE_LIMIT = 300_000
+
+
 def embed_texts(texts: List[str]) -> np.ndarray:
-    """Returns an (n, dim) float32 array. Empty input -> shape (0, 0)."""
+    """Returns an (n, dim) float32 array. Empty input -> shape (0, 0).
+
+    Vectors are memoized by text: graph search ranks largely the same facts and chunks for every
+    question over a corpus, and re-embedding thousands of them on the CPU per question dominated
+    GraphRAG latency. Embeddings are deterministic, so caching never changes a result."""
     if not texts:
         return np.zeros((0, 0), dtype=np.float32)
-    embedder = get_embedder()
-    vecs = embedder(texts)
-    return np.asarray(vecs, dtype=np.float32)
+    with _cache_lock:
+        missing = list(dict.fromkeys(t for t in texts if t not in _cache))
+    if missing:
+        vecs = np.asarray(get_embedder()(missing), dtype=np.float32)
+        with _cache_lock:
+            if len(_cache) + len(missing) > CACHE_LIMIT:
+                _cache.clear()
+            _cache.update(zip(missing, vecs))
+            computed = dict(zip(missing, vecs))
+    else:
+        computed = {}
+    with _cache_lock:
+        return np.stack([computed.get(t, _cache.get(t)) for t in texts])
 
 
 def cosine_sim_matrix(query_vecs: np.ndarray, corpus_vecs: np.ndarray) -> np.ndarray:

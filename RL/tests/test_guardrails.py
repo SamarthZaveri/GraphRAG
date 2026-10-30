@@ -72,7 +72,7 @@ def test_queries_without_a_known_workspace_use_the_shared_corpus(tmp_path, monke
     from app import models, workspace
     client, main = _client(tmp_path, monkeypatch)
     seen = []
-    def answer(engine, question, mode="auto"):
+    def answer(engine, question, mode="auto", classification=None):
         seen.append(workspace.current())
         return models.QueryResponse(question=question, mode_used="local", answer="ok", citations=[])
     with patch.object(main.engines, "answer_question", side_effect=answer):

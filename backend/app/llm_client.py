@@ -120,7 +120,7 @@ def chat(model, system, user, max_tokens=1000, json_mode=False, temperature=0.1)
         headers = {}
         payload = {"model": model, "messages": messages, "stream": False,
                    "keep_alive": config.OLLAMA_KEEP_ALIVE,
-                   "options": {"num_predict": max_tokens, "temperature": temperature, "num_ctx": config.OLLAMA_NUM_CTX}}
+                   "options": {"num_predict": max_tokens, "temperature": temperature, "num_ctx": config.num_ctx(model)}}
         if json_mode:
             payload["format"] = "json"
     for attempt in range(max(1, config.LLM_RETRIES, config.RATE_LIMIT_ATTEMPTS)):

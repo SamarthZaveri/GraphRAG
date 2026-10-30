@@ -167,6 +167,7 @@ def _corpus_status():
         "llm_endpoint": config.API_BASE_URL if config.LLM_BACKEND == "api" else config.OLLAMA_HOST,
         "configured_models": {
             "extraction": config.EXTRACTION_MODEL,
+            "query": config.QUERY_MODEL,
             "answer": config.ANSWER_MODEL,
             "judge": config.JUDGE_MODEL,
             "question": config.QUESTION_MODEL,
@@ -357,8 +358,9 @@ def _traced_answer(engine: str, question: str, mode: str, endpoint: str, routing
     """Answer with one engine and attach latency/token/cost metrics and quality signals.
     Pass an open trace `t` to include work done before this call (e.g. routing)."""
     def run(trace):
+        classification = (routing["category"], routing.get("entities") or []) if routing and routing.get("category") else None
         with telemetry.span("engine"):
-            resp = engines.answer_question(engine, question, mode=mode)
+            resp = engines.answer_question(engine, question, mode=mode, classification=classification)
         resp.metrics = trace.summary()
         engine_ms = resp.metrics["stage_ms"].get("engine", 0.0)
         engine_llm_ms = sum(s["ms"] for stage, s in resp.metrics["llm_by_stage"].items() if stage != "routing")
@@ -477,9 +479,15 @@ def get_rl_results():
         except (OSError, ValueError):
             return None
     policy = load(root / "policy.json")
+    splits = ("train", "dev", "test")
+    def pair(base, split):
+        return {"summary": load(base / split / "summary.json"), "analysis": load(base / split / "analysis.json")}
+    # <run>/<dataset>/<split>/ holds per-dataset results; <run>/<split>/ holds the combined ones.
+    datasets = sorted(p.name for p in root.iterdir() if p.is_dir() and p.name not in splits
+                      and any((p / s / "summary.json").exists() for s in splits)) if root.is_dir() else []
     return {
-        "splits": {split: {"summary": load(root / split / "summary.json"), "analysis": load(root / split / "analysis.json")}
-                   for split in ("train", "dev", "test")},
+        "splits": {split: pair(root, split) for split in splits},
+        "datasets": {name: {split: pair(root / name, split) for split in splits} for name in datasets},
         "policy": {"arms": policy.get("arms"), "alpha": policy.get("alpha"), "context_dim": policy.get("context_dim"),
                    "metadata": policy.get("metadata")} if policy else None,
     }
