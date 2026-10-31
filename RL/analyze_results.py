@@ -61,9 +61,30 @@ def gold_docs(manifest, split):
     return out
 
 
+RETRIEVAL_KS = (1, 3, 5)
+
+
+def ranking_scores(ranked, target, ks=RETRIEVAL_KS):
+    """precision@k, recall@k and nDCG@k (binary relevance) for one ranked list of unique doc ids.
+    precision@k divides by k, so an engine that returns fewer than k documents is not rewarded
+    for it; the ideal DCG places min(k, |target|) relevant documents first."""
+    rel = [d in target for d in ranked]
+    out = {}
+    for k in ks:
+        top = rel[:k]
+        dcg = sum(1 / np.log2(i + 2) for i, r in enumerate(top) if r)
+        ideal = sum(1 / np.log2(i + 2) for i in range(min(k, len(target))))
+        out[f"precision@{k}"] = sum(top) / k
+        out[f"recall@{k}"] = sum(top) / len(target)
+        out[f"ndcg@{k}"] = dcg / ideal if ideal else 0.0
+    return out
+
+
 def retrieval_metrics(records, engine, gold):
-    """Document-level hit@k and MRR from each engine's ranked citations against evidence documents."""
-    hits, rr = [], []
+    """Document-level retrieval quality from each engine's ranked citations (deduplicated by
+    document, in rank order) against the question's evidence documents: hit rate and MRR, plus
+    precision@k, recall@k and nDCG@k. Questions without gold evidence are skipped."""
+    hits, rr, ranks = [], [], []
     for r in records:
         target = gold.get(r["question_id"])
         if not target:
@@ -72,8 +93,12 @@ def retrieval_metrics(records, engine, gold):
         rank = next((i + 1 for i, d in enumerate(ranked) if d in target), None)
         hits.append(rank is not None)
         rr.append(1 / rank if rank else 0.0)
-    return {"doc_hit_rate": round(float(np.mean(hits)), 4) if hits else None,
-            "doc_mrr": round(float(np.mean(rr)), 4) if rr else None, "n": len(hits)}
+        ranks.append(ranking_scores(ranked, target))
+    out = {"doc_hit_rate": round(float(np.mean(hits)), 4) if hits else None,
+           "doc_mrr": round(float(np.mean(rr)), 4) if rr else None, "n": len(hits)}
+    for name in (f"{m}@{k}" for k in RETRIEVAL_KS for m in ("precision", "recall", "ndcg")):
+        out[name] = round(float(np.mean([s[name] for s in ranks])), 4) if ranks else None
+    return out
 
 
 def analyze(records, gold, seed=0):
@@ -166,7 +191,7 @@ def main():
                     **analyze(records, dataset_gold)}
         (folder / "analysis.json").write_text(json.dumps(analysis, indent=2))
         by_dataset[name] = {k: analysis[k] for k in ("n", "policies", "best_single_engine", "outright_wins", "router",
-                                                       "engine_vs_best", "latency_ms", "abstention_rate") if k in analysis}
+                                                       "engine_vs_best", "latency_ms", "abstention_rate", "retrieval") if k in analysis}
         combined += records
         gold.update(dataset_gold)
         summaries.append(json.loads((folder / "summary.json").read_text()))

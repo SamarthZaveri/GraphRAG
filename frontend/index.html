@@ -508,6 +508,30 @@ section.block { padding: 64px 0; }
 .tabs button[aria-selected="true"] { background: var(--accent); color: var(--on-accent); }
 .tabs button:disabled { opacity: .4; cursor: not-allowed; }
 .tabs small { font: 400 10px var(--f-mono); opacity: .8; }
+.tab-stack { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+.tab-stack .tabs[hidden] { display: none; }
+@media (max-width: 720px) { .tab-stack { align-items: flex-start; } }
+
+/* Replay mode: recorded runs, no backend */
+.replay-ribbon { position: relative; z-index: 5; border-bottom: 1px solid var(--line); background: var(--accent-soft); font-size: 13px; color: var(--ink-2); }
+.replay-ribbon .wrap { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; padding-top: 9px; padding-bottom: 9px; }
+.replay-ribbon b { color: var(--ink); font-weight: 600; }
+.replay-ribbon a { color: var(--accent-ink); }
+.answer.streaming { white-space: pre-wrap; }
+.answer.streaming::after { content: '\258D'; margin-left: 1px; color: var(--accent); animation: caret 1s steps(2) infinite; }
+@keyframes caret { 50% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .answer.streaming::after { animation: none; } }
+.replay-ribbon .tag { font: 500 10px var(--f-mono); letter-spacing: .08em; text-transform: uppercase; padding: 3px 8px; border-radius: 999px; background: var(--accent); color: var(--on-accent); }
+.cpu-ribbon .tag { background: var(--warn); }
+@media (min-width: 720px) { .cpu-ribbon .wrap { flex-wrap: nowrap; align-items: baseline; } }
+.qbox[readonly] { cursor: default; }
+.verdict { display: grid; gap: 10px; }
+.verdict .row { display: grid; grid-template-columns: 110px 54px 1fr; gap: 12px; align-items: start; font-size: 13.5px; }
+.verdict .score { font: 500 13px var(--f-mono); }
+.verdict .why { color: var(--ink-2); margin: 0; }
+.ref { margin: 0 0 14px; padding: 12px 14px; border-radius: 12px; background: var(--surface-2); font-size: 14px; color: var(--ink-2); }
+.ref b { display: block; font: 500 10.5px var(--f-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3); margin-bottom: 6px; }
+@media (max-width: 720px) { .verdict .row { grid-template-columns: 1fr 50px; } .verdict .why { grid-column: 1 / -1; } }
 .bench-grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 18px; }
 .span-12 { grid-column: span 12; } .span-7 { grid-column: span 7; } .span-5 { grid-column: span 5; } .span-6 { grid-column: span 6; } .span-4 { grid-column: span 4; } .span-8 { grid-column: span 8; }
 .headline { display: grid; grid-template-columns: 1.4fr repeat(3, 1fr); gap: 0; padding: 0; overflow: hidden; }
@@ -628,6 +652,9 @@ footer b { font: 400 20px var(--f-display); color: var(--ink); }
   .headline > div + div { border-left: 0; border-top: 1px solid var(--line); }
   .mrow { grid-template-columns: 80px repeat(3, 1fr); }
   .pill.model { display: none; }
+  .top-right { min-width: 0; }
+  .pill { min-width: 0; max-width: 52vw; }
+  .pill > span:last-child { overflow: hidden; text-overflow: ellipsis; }
   .brand small { display: none; }
   .console-bar .btn { margin-left: 0; width: 100%; }
   .hbar { grid-template-columns: 80px 1fr 90px; }
@@ -796,11 +823,14 @@ footer b { font: 400 20px var(--f-display); color: var(--ink); }
     <div class="wrap">
       <div class="sec-head reveal">
         <div><span class="num">03 / EVALUATION</span><h2>Does routing pay off?</h2>
-          <p>FinQA filings, with numeric answers scored by an exact scalar check and text answers by a blinded LLM judge. The router is fit on <b>train</b> rewards and frozen. <b>Dev</b> and <b>test</b> are held out. Error bars are bootstrap 95% CIs.</p></div>
-        <div class="tabs" role="tablist" id="split-tabs">
-          <button role="tab" data-split="train" aria-selected="false">Train <small></small></button>
-          <button role="tab" data-split="dev" aria-selected="false">Dev <small></small></button>
-          <button role="tab" data-split="test" aria-selected="false">Test <small></small></button>
+          <p>Two benchmarks. <b>FinQA</b>: single report pages, with numeric answers scored by an exact scalar check. <b>SEC EDGAR</b>: real earnings releases, 3 companies × 2 quarters per sector, so questions span documents. Text answers are scored by a blinded LLM judge. The router is fit on <b>train</b> rewards and frozen; <b>dev</b> and <b>test</b> are held out, and test sectors never appear in training. Error bars are bootstrap 95% CIs.</p></div>
+        <div class="tab-stack">
+          <div class="tabs" role="tablist" aria-label="Dataset" id="ds-tabs" hidden></div>
+          <div class="tabs" role="tablist" aria-label="Split" id="split-tabs">
+            <button role="tab" data-split="train" aria-selected="false">Train <small></small></button>
+            <button role="tab" data-split="dev" aria-selected="false">Dev <small></small></button>
+            <button role="tab" data-split="test" aria-selected="false">Test <small></small></button>
+          </div>
         </div>
       </div>
       <div id="bench" class="bench-grid"><div class="card span-12 empty">Loading benchmark results…</div></div>
@@ -838,6 +868,7 @@ footer b { font: 400 20px var(--f-display); color: var(--ink); }
 <div class="toast" id="toast" role="status"></div>
 <div class="tip" id="tip" role="tooltip"></div>
 
+<script src="config.js"></script>
 <script>
 /* ───────────── Setup ───────────── */
 const API_BASE = (window.LEDGER_API_BASE || safeGet('ledger_api_base') ||
@@ -860,8 +891,10 @@ const SAMPLES = [
   ['multi_hop', 'How did operating expenses change as a share of revenue, and what drove the change?'],
   ['conflict', 'Are non-GAAP adjustments defined consistently across these filings?'],
 ];
-const state = { status: null, rl: null, split: null, engine: 'auto', mode: 'add', files: [], windowMin: 60, job: null,
-  corpus: 'shared', target: 'mine', retryUntil: 0 };
+const state = { status: null, rl: null, split: null, dataset: 'all', engine: 'auto', mode: 'add', files: [], windowMin: 60, job: null,
+  corpus: 'shared', target: 'mine', retryUntil: 0, replay: null };
+const DATASET_LABEL = { all: 'All', shared_finqa: 'FinQA', edgar_xdoc: 'SEC EDGAR' };
+const REPO_URL = 'https://github.com/SamarthZaveri/GraphRAG';
 
 function safeGet(k) { try { return localStorage.getItem(k); } catch { return null; } }
 function safeSet(k, v) { try { localStorage.setItem(k, v); } catch {} }
@@ -887,21 +920,62 @@ const WORKSPACE_ID = (() => {
   return id;
 })();
 
+function noteRate(res) {
+  const limit = res.headers.get('X-RateLimit-Limit');
+  if (limit) state.rate = { group: res.headers.get('X-RateLimit-Group'), limit: +limit, remaining: +res.headers.get('X-RateLimit-Remaining') };
+}
+
+function httpError(res, data) {
+  const err = new Error((data && (data.detail || data.message)) || `Request failed (${res.status})`);
+  err.status = res.status;
+  err.retryAfter = +(res.headers.get('Retry-After') || (data && data.retry_after) || 0);
+  return err;
+}
+
 async function api(path, opts = {}) {
+  if (state.replay) return replayApi(path);
   const { ws, ...init } = opts;
   if (ws) init.headers = { ...(init.headers || {}), 'X-Ledger-Workspace': WORKSPACE_ID };
   const res = await fetch(API_BASE + path, init);
   let data = null;
   try { data = await res.json(); } catch {}
-  const limit = res.headers.get('X-RateLimit-Limit');
-  if (limit) state.rate = { group: res.headers.get('X-RateLimit-Group'), limit: +limit, remaining: +res.headers.get('X-RateLimit-Remaining') };
-  if (!res.ok) {
-    const err = new Error((data && (data.detail || data.message)) || `Request failed (${res.status})`);
-    err.status = res.status;
-    err.retryAfter = +(res.headers.get('Retry-After') || (data && data.retry_after) || 0);
-    throw err;
-  }
+  noteRate(res);
+  if (!res.ok) throw httpError(res, data);
   return data;
+}
+
+/* POST /query/stream and read its server-sent events (EventSource can't POST). onEvent receives
+   meta / token / reset as they arrive; resolves with the final QueryResponse, or null when the
+   backend predates streaming. */
+async function streamQuery(body, ws, onEvent) {
+  const headers = { 'Content-Type': 'application/json', Accept: 'text/event-stream' };
+  if (ws) headers['X-Ledger-Workspace'] = WORKSPACE_ID;
+  const res = await fetch(API_BASE + '/query/stream', { method: 'POST', headers, body: JSON.stringify(body) });
+  noteRate(res);
+  if (res.status === 404 || res.status === 405) return null;
+  if (!res.ok) { let data = null; try { data = await res.json(); } catch {} throw httpError(res, data); }
+  const reader = res.body.getReader(), dec = new TextDecoder();
+  let buf = '';
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true }).replace(/\r\n/g, '\n');
+    let cut;
+    while ((cut = buf.indexOf('\n\n')) >= 0) {
+      const block = buf.slice(0, cut); buf = buf.slice(cut + 2);
+      let ev = 'message', data = '';
+      for (const line of block.split('\n')) {
+        if (line.startsWith('event: ')) ev = line.slice(7);
+        else if (line.startsWith('data: ')) data += line.slice(6);
+      }
+      if (!data) continue;  // keep-alive comment
+      const payload = JSON.parse(data);
+      if (ev === 'done') return payload;
+      if (ev === 'error') throw new Error(payload.detail || 'The answer failed.');
+      onEvent(ev, payload);
+    }
+  }
+  throw new Error('The answer stream closed early. Try again.');
 }
 
 function toast(msg, err = false) {
@@ -1038,7 +1112,8 @@ async function loadStatus() {
     rp.querySelector('.dot').className = 'dot ' + (r.compatible ? 'ok' : r.deployed ? 'warn' : 'bad');
     rp.lastElementChild.textContent = r.compatible ? 'router live' : r.deployed ? 'router: config mismatch' : 'router: fallback';
     rp.title = r.compatible ? 'Trained router policy deployed and compatible' : 'Routing falls back to a corpus-level rule';
-    renderCorpus(s); renderWorkspace(s); renderPolicy(s); renderLimits(s);
+    renderCorpus(s); renderWorkspace(s); renderPolicy(s); renderLimits(s); renderDevice(s);
+    if (!state.suggested) loadSuggested();
     $('#foot-meta').innerHTML = `answer model · ${esc(s.configured_models.answer)}<br>backend · ${esc(s.llm_backend)}<br>api · ${esc(API_BASE)}`;
     if (s.active_jobs && s.active_jobs.length && !state.job) pollJob(s.active_jobs[0].id, s.active_jobs[0].owner ? true : false);
   } catch (e) {
@@ -1047,6 +1122,26 @@ async function loadStatus() {
     llm.lastElementChild.textContent = 'API unreachable';
     $('#corpus-stats').innerHTML = `<div class="empty" style="grid-column:span 2">Backend unreachable at <span class="mono">${esc(API_BASE)}</span></div>`;
   }
+}
+
+/* Questions the deployment has pre-answered (scripts/warm_cache.py) replace the generic samples. */
+async function loadSuggested() {
+  state.suggested = true;
+  let qs = [];
+  try { qs = await api('/questions/suggested'); } catch { return; }
+  if (!qs.length) return;
+  $('#chips').innerHTML = qs.slice(0, 8).map(q => `<button type="button" class="chip" data-q="${esc(q.question)}" data-tip="Pre-answered on this corpus: returns instantly from the cache${q.cached?.includes('compare') ? ', in Auto and Compare' : ''}"><i>${esc(q.category.replace('_', '-'))} · instant</i>${esc(q.question.length > 64 ? q.question.slice(0, 62) + '…' : q.question)}</button>`).join('');
+}
+
+function renderDevice(s) {
+  const cpu = s.inference_device === 'cpu';
+  let rib = $('#cpu-ribbon');
+  if (!cpu) { if (rib) rib.remove(); return; }
+  if (rib) return;
+  document.querySelector('header').insertAdjacentHTML('afterend', `<div class="replay-ribbon cpu-ribbon" id="cpu-ribbon" role="note"><div class="wrap">
+    <span class="tag">CPU</span>
+    <span><b>This live demo runs a 7B model on a free CPU.</b> A new answer takes about 1 to 3 minutes and appears as it is written; questions already asked come back instantly from the cache. The benchmark numbers below were measured on a GPU.</span>
+  </div></div>`);
 }
 
 function renderCorpus(s) {
@@ -1099,7 +1194,7 @@ function setCorpus(c) {
 function renderPolicy(s) {
   const r = s.router || {};
   if (!r.deployed) {
-    $('#policy').innerHTML = `<p class="note" style="margin:0">No trained policy deployed. Auto mode uses the corpus-level fallback rule. Copy <span class="mono">RL/data/local-14b/policy.json</span> to <span class="mono">graph_state/query_bandit.json</span> to enable learned routing.</p>`;
+    $('#policy').innerHTML = `<p class="note" style="margin:0">No trained policy deployed. Auto mode uses the corpus-level fallback rule. Copy <span class="mono">RL/data/runs/mixed/policy.json</span> to <span class="mono">graph_state/query_bandit.json</span> to enable learned routing.</p>`;
     return;
   }
   const m = r.metadata || {};
@@ -1159,24 +1254,39 @@ $('#engine-seg').addEventListener('click', e => {
 $('#q').addEventListener('keydown', e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); $('#ask-form').requestSubmit(); } });
 $('#ask-form').addEventListener('submit', async e => {
   e.preventDefault();
+  if (state.replay) { replayAnswer(); return; }
   const question = $('#q').value.trim(); if (!question) return;
   if (state.retryUntil > Date.now()) return;
   const btn = $('#ask-btn'); btn.disabled = true;
   const stop = renderLoading(state.engine);
   const ws = state.corpus === 'mine';
-  let held = false;
+  let held = false, ticker = null;
   try {
     if (state.engine === 'compare') {
       const r = await api('/query/compare', { method: 'POST', ws, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ question, mode: 'auto' }) });
       stop(); renderCompare(r);
     } else {
-      const r = await api('/query', { method: 'POST', ws, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ question, mode: 'auto', engine: state.engine }) });
-      stop(); renderAnswer(r);
+      const body = { question, mode: 'auto', engine: state.engine }, t0 = performance.now();
+      let text = '';
+      const r = await streamQuery(body, ws, (ev, data) => {
+        if (ev === 'meta') {
+          stop(); renderStreaming(data.engine, data.routing);
+          ticker = setInterval(() => { const el = $('#st-el'); if (el) el.textContent = ((performance.now() - t0) / 1000).toFixed(1) + 's'; }, 100);
+        } else if (ev === 'token') {
+          if (!text) { const el = $('#st-ttft'); if (el) el.textContent = fmt.ms(performance.now() - t0); }
+          text += data;
+          const el = $('#stream-ans'); if (el) el.textContent = text;
+        } else if (ev === 'reset') {
+          text = '';
+          const el = $('#stream-state'); if (el) el.textContent = 'retrying with a longer limit…';
+        }
+      }) || await api('/query', { method: 'POST', ws, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      clearInterval(ticker); stop(); renderAnswer(r);
     }
     rememberQuestion(question);
     loadTelemetry();
   } catch (err) {
-    stop();
+    stop(); clearInterval(ticker);
     const busy = err.status === 429 || err.status === 503;
     $('#results').innerHTML = `<div class="card"><span class="flag ${busy ? 'warn' : 'bad'}">${err.status === 429 ? 'slow down' : err.status === 503 ? 'busy' : 'error'}</span><p style="margin:12px 0 0">${esc(err.message)}</p></div>`;
     if (busy && err.retryAfter) { held = true; holdAskButton(err.retryAfter); }
@@ -1192,13 +1302,13 @@ function renderLoading(engine) {
       : ['Retrieving evidence', 'Generating a grounded answer'];
   $('#results').innerHTML = `<div class="loading">
     <div class="card"><div class="skel" style="width:30%"></div><div class="skel"></div><div class="skel" style="width:92%"></div><div class="skel" style="width:76%"></div><div class="skel" style="width:84%"></div></div>
-    <div class="card"><div class="card-title"><h3>Working</h3><span class="hint">local LLMs can take a while</span></div>
+    <div class="card"><div class="card-title"><h3>Working</h3><span class="hint">${state.status?.inference_device === 'cpu' ? 'CPU host: expect 1–3 min' : 'local LLMs can take a while'}</span></div>
       <div class="elapsed mono" id="elapsed">0.0s</div>
       <ol class="steps" id="steps">${steps.map(s => `<li>${s}</li>`).join('')}</ol>
       ${engine === 'auto' ? `<div style="margin-top:14px">${routeSVG({ busy: true, compact: true })}</div>` : ''}
     </div></div>`;
   const t0 = performance.now(), lis = $$('#steps li');
-  // The API doesn't stream yet, so steps advance on a typical-latency schedule; the timer is real.
+  // Steps before the first streamed event advance on a typical-latency schedule; the timer is real.
   const marks = engine === 'compare' ? [0, 30, 60, 90] : engine === 'auto' ? [0, 6, 9, 14] : [0, 4];
   const iv = setInterval(() => {
     const s = (performance.now() - t0) / 1000;
@@ -1238,8 +1348,9 @@ function formatAnswer(text, citations, scope) {
   }).join('');
   let num = '';
   if (numeric) {
-    const m = /^([-+]?[\d,.]+|yes|no)\s*(.*)$/i.exec(numeric);
-    num = `<div class="numeric"><span class="n">${esc(m ? m[1] : numeric)}</span><span class="u">${esc(m && m[2] ? m[2] : 'final numeric answer')}</span></div>`;
+    // Small models sometimes put a sentence on this line; only a number or yes/no earns the callout.
+    const m = /^([-+]?[\d,.]*\d[\d,.]*|yes|no)\s*(.{0,40})$/i.exec(numeric);
+    if (m) num = `<div class="numeric"><span class="n">${esc(m[1])}</span><span class="u">${esc(m[2] || 'final numeric answer')}</span></div>`;
   }
   return { num, html: blocks };
 }
@@ -1285,7 +1396,7 @@ function telemetryCard(m, q) {
   const cov = q && q.citation_coverage;
   return `<div class="card reveal">
     <div class="card-title"><h3>Telemetry</h3><span class="hint">${m.tokens_estimated ? 'tokens estimated' : 'provider-reported tokens'}</span></div>
-    <div class="big-latency"><span class="n">${fmt.ms(m.latency_ms)}</span><span class="u">end-to-end</span></div>
+    <div class="big-latency"><span class="n">${fmt.ms(m.latency_ms)}</span><span class="u">end-to-end${m.ttft_ms != null ? ` · first token ${fmt.ms(m.ttft_ms)}` : ''}</span></div>
     ${waterfall(m)}
     <div class="kv">
       <div><div class="k">tokens in</div><div class="v">${fmt.int(m.prompt_tokens)}</div></div>
@@ -1321,6 +1432,31 @@ function routingCard(r, engine) {
   </div>`;
 }
 
+function renderStreaming(engine, routing) {
+  $('#results').innerHTML = `<div class="res-grid">
+    <div class="card">
+      <div class="answer-head">
+        <span class="engine-tag"><i class="swatch" style="background:${META[engine]?.color}"></i>${esc(META[engine]?.long || engine)}</span>
+        <span class="spacer"></span><span class="flag" id="stream-state">writing…</span>
+      </div>
+      <div class="answer streaming" id="stream-ans"></div>
+    </div>
+    <div class="side">${routing ? routingCard(routing, engine) : ''}
+      <div class="card"><div class="card-title"><h3>Live</h3><span class="hint">streamed as generated</span></div>
+        <div class="kv">
+          <div><div class="k">elapsed</div><div class="v mono" id="st-el">0.0s</div></div>
+          <div><div class="k">first token</div><div class="v mono" id="st-ttft">–</div></div>
+        </div>
+      </div>
+    </div>
+  </div>`;
+  observeReveals($('#results'));
+}
+
+function cachedFlag(m) {
+  return `<span class="flag good" data-tip="Same question on the same corpus: served from the response cache without calling the model.${m?.latency_ms ? ` The original answer took ${fmt.ms(m.latency_ms)}.` : ''}">cached</span>`;
+}
+
 function renderAnswer(r) {
   const eng = r.engine_used;
   const { num, html } = formatAnswer(r.answer, r.citations, 'single');
@@ -1329,6 +1465,7 @@ function renderAnswer(r) {
       <div class="answer-head">
         <span class="engine-tag"><i class="swatch" style="background:${META[eng]?.color}"></i>${esc(META[eng]?.long || eng)}</span>
         <span class="engine-tag">${esc(r.mode_used)} mode</span>
+        ${r.cache_hit ? cachedFlag(r.metrics) : ''}
         <span class="spacer"></span>
         <button class="btn sm" type="button" id="copy-ans">Copy</button>
       </div>
@@ -1365,10 +1502,10 @@ function renderCompare(r) {
   const lat = ENGINES.map(e => [e, resp[e]?.metrics?.latency_ms || 0]);
   const maxLat = Math.max(...lat.map(l => l[1]), 1);
   $('#results').innerHTML = `
-    <div class="card reveal"><div class="card-title"><h3>Head to head</h3><span class="hint">same question, all three engines</span></div>
+    <div class="card reveal"><div class="card-title"><h3>Head to head</h3><span class="hint">${r.cache_hit ? cachedFlag() : 'same question, all three engines'}</span></div>
       ${lat.map(([e, v], i) => `<div class="hbar"><span style="display:flex;gap:7px;align-items:center"><i class="swatch" style="background:${META[e].color}"></i>${META[e].name}</span>
         <div class="track"><span style="width:${v / maxLat * 100}%;background:${META[e].color};animation-delay:${i * .1}s"></span></div>
-        <span class="v">${fmt.ms(v)} · ${fmt.pct(resp[e]?.quality?.citation_coverage)} cited</span></div>`).join('')}
+        <span class="v">${fmt.ms(v)}${resp[e]?.quality?.citation_coverage != null ? ` · ${fmt.pct(resp[e].quality.citation_coverage)} cited` : ''}</span></div>`).join('')}
     </div>
     <div class="cmp">${cols}</div>`;
   observeReveals($('#results'));
@@ -1381,7 +1518,7 @@ function limits() {
 }
 function renderLimits() {
   const l = limits();
-  $('#limits').innerHTML = `<span>${l.extensions.join(' · ')}</span><span>max ${l.max_files} files</span><span>${l.max_mb} MB each</span>`;
+  $('#limits').innerHTML = `<span>${l.extensions.join(' · ')}</span><span>max ${l.max_files} files</span><span>${l.max_mb} MB each</span>${l.max_pdf_pages ? `<span>PDFs up to ${l.max_pdf_pages} pages</span>` : ''}`;
   $('#file-input').accept = l.extensions.join(',');
 }
 function validateFile(f) {
@@ -1498,23 +1635,40 @@ async function loadBenchmarks() {
   } catch (e) {
     $('#bench').innerHTML = `<div class="card span-12 empty">Benchmark results unavailable: ${esc(e.message)}</div>`; return;
   }
-  const sp = state.rl.splits;
+  const names = Object.keys(state.rl.datasets || {});
+  $('#ds-tabs').hidden = names.length < 2;
+  $('#ds-tabs').innerHTML = ['all', ...names].map(d =>
+    `<button role="tab" data-ds="${esc(d)}" aria-selected="${d === state.dataset}">${esc(DATASET_LABEL[d] || d)}</button>`).join('');
+  state.split = ['test', 'dev', 'train'].find(s => state.rl.splits[s]?.summary) || null;
+  syncSplitTabs();
+  heroStats();
+  renderBench();
+}
+/* Results for one split under the selected dataset ('all' = the combined analysis). */
+function benchPair(split) {
+  return (state.dataset === 'all' ? state.rl.splits[split] : state.rl.datasets?.[state.dataset]?.[split]) || {};
+}
+function syncSplitTabs() {
   $$('#split-tabs button').forEach(b => {
-    const s = sp[b.dataset.split]?.summary;
+    const s = benchPair(b.dataset.split).summary;
     b.disabled = !s;
     b.querySelector('small').textContent = s ? `n=${s.completed}` : 'pending';
   });
-  state.split = ['test', 'dev', 'train'].find(s => sp[s]?.summary) || null;
-  heroStats();
-  renderBench();
+  if (!benchPair(state.split).summary) state.split = ['test', 'dev', 'train'].find(s => benchPair(s).summary) || null;
 }
 $('#split-tabs').addEventListener('click', e => {
   const b = e.target.closest('button'); if (!b || b.disabled) return;
   state.split = b.dataset.split; renderBench();
 });
+$('#ds-tabs').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  state.dataset = b.dataset.ds;
+  $$('#ds-tabs button').forEach(x => x.setAttribute('aria-selected', x === b));
+  syncSplitTabs(); renderBench();
+});
 
 function policiesFor(split) {
-  const { summary, analysis } = state.rl.splits[split] || {};
+  const { summary, analysis } = benchPair(split);
   if (analysis?.policies) {
     return Object.fromEntries(Object.entries(analysis.policies).map(([k, v]) => [k.replace('always_', ''), v]));
   }
@@ -1528,8 +1682,11 @@ function heroStats() {
   const sp = state.rl.splits;
   const total = ['train', 'dev', 'test'].reduce((a, s) => a + (sp[s]?.summary?.completed || 0), 0);
   if (total) countUp($('#hs-q'), total);
+  // The hero always reports the combined benchmark, whatever dataset tab is selected below.
+  const shown = state.dataset; state.dataset = 'all';
   const held = ['test', 'dev'].find(s => policiesFor(s).router) || null;
   const pol = held ? policiesFor(held) : state.split ? policiesFor(state.split) : {};
+  state.dataset = shown;
   const best = ENGINES.reduce((b, e) => pol[e] && (!b || pol[e].mean > pol[b].mean) ? e : b, null);
   if (pol.router) { countUp($('#hs-router'), pol.router.mean, 2); $('#hs-router-k').textContent = `router reward · ${held}`; }
   else if (best) { countUp($('#hs-router'), pol[best].mean, 2); $('#hs-router-k').textContent = `best engine (${META[best].name}) · ${state.split}`; }
@@ -1544,7 +1701,7 @@ function renderBench() {
   $$('#split-tabs button').forEach(b => b.setAttribute('aria-selected', b.dataset.split === state.split));
   const host = $('#bench');
   if (!state.split) { host.innerHTML = `<div class="card span-12 empty">No benchmark runs found yet. Run <span class="mono">scripts/run-local-flow.ps1</span>.</div>`; return; }
-  const { summary, analysis } = state.rl.splits[state.split];
+  const { summary, analysis } = benchPair(state.split);
   const pol = policiesFor(state.split);
   const hasRouter = !!pol.router;
   const best = ENGINES.reduce((b, e) => pol[e] && (!b || pol[e].mean > pol[b].mean) ? e : b, null);
@@ -1575,7 +1732,7 @@ function headlineCard(pol, best, hasRouter, analysis) {
   const metric = (k, v, label, color) => `<div class="metric"><div class="k"><i class="swatch" style="background:${color}"></i>${label}</div>
     <div class="v">${v ? (+v.mean).toFixed(3) : '–'}</div><div class="ci">${v?.ci95 ? `95% CI ${v.ci95[0].toFixed(2)} – ${v.ci95[1].toFixed(2)}` : v ? `n = ${v.n ?? '–'}` : ''}</div></div>`;
   return `<div class="card headline span-12 reveal">
-    <div><span class="num">${state.split.toUpperCase()} SPLIT · ${(analysis?.n ?? state.rl.splits[state.split].summary?.completed) || 0} QUESTIONS</span><p class="claim">${claim}</p></div>
+    <div><span class="num">${state.dataset === 'all' ? '' : esc(DATASET_LABEL[state.dataset] || state.dataset).toUpperCase() + ' · '}${state.split.toUpperCase()} SPLIT · ${(analysis?.n ?? benchPair(state.split).summary?.completed) || 0} QUESTIONS</span><p class="claim">${claim}</p></div>
     ${metric('router', r, hasRouter ? 'Adaptive router' : 'Router (n/a on train)', 'var(--s-router)')}
     ${metric(best, b, b ? `Best single · ${META[best].name}` : 'Best single', b ? META[best].color : 'var(--s-neutral)')}
     ${metric('oracle', o, 'Oracle ceiling', 'var(--s-neutral)')}
@@ -1685,7 +1842,10 @@ function findingsCard(a, pol, best, hasRouter) {
   });
   const ab = a.abstention_rate || {}, rt = a.retrieval || {};
   if (ab.graphrag != null && rt.graphrag) {
-    facts.push(`<div class="fact"><span class="tag">insight</span><span><b>Why graph retrieval trails:</b> it finds the gold document in ${fmt.pct(rt.graphrag.doc_hit_rate)} of questions (vs ${fmt.pct(rt.hybrid_rag?.doc_hit_rate)} for hybrid) and abstains ${fmt.pct(ab.graphrag)} of the time. Entity-level summaries lose the exact table figures that FinQA questions need.</span></div>`);
+    const why = { shared_finqa: 'FinQA questions come from a single report page, so a graph has little to connect and loses exact table figures.',
+      edgar_xdoc: 'Across filings the graph links companies and quarters, which helps, but hybrid lexical + dense search still finds the exact figures more often.' }[state.dataset]
+      || 'The graph pays off on cross-document questions and trails on single-page lookups.';
+    facts.push(`<div class="fact"><span class="tag">insight</span><span><b>Graph retrieval:</b> finds the gold document in ${fmt.pct(rt.graphrag.doc_hit_rate)} of questions (vs ${fmt.pct(rt.hybrid_rag?.doc_hit_rate)} for hybrid) and abstains ${fmt.pct(ab.graphrag)} of the time. ${why}</span></div>`);
   }
   if (pol.oracle && best) facts.push(`<div class="fact"><span class="tag">headroom</span><span>A perfect per-question router would reach <b>${pol.oracle.mean.toFixed(3)}</b>, ${(pol.oracle.mean - pol[best].mean).toFixed(3)} above always-${META[best].name}. That's the most any router could add on this split.</span></div>`);
   return `<div class="card span-12 reveal"><div class="card-title"><h3>What the numbers say</h3><span class="hint">paired bootstrap, 10k resamples</span></div><div class="facts">${facts.join('')}</div></div>`;
@@ -1717,11 +1877,11 @@ async function loadTelemetry() {
   $('#tele').innerHTML = `
     <div class="kpis">
       ${kpi('Latency · p50', p50, p50u, `p95 ${fmt.ms(L.p95)} · p99 ${fmt.ms(L.p99)}`)}
-      ${kpi('Throughput', T.requests_per_min ?? '–', 'req/min', `${s.requests} requests · ${s.errors} errors`)}
+      ${kpi('Throughput', T.requests_per_min ?? '–', 'req/min', `${s.requests} requests · ${s.cache?.hits ?? 0} cached`, 'Cached answers are counted apart and excluded from latency')}
       ${kpi('Generation speed', T.output_tokens_per_s ?? '–', 'tok/s', `${fmt.int(s.tokens.total)} tokens total`)}
       ${kpi('Est. cost', fmt.usd(s.cost_usd.total), '', `${fmt.usd(s.cost_usd.mean_per_request)} per request`, 'Self-hosted: GPU $/hr × LLM time. Hosted API: per-token price.')}
-      ${kpi('Tokens / request', fmt.int(s.tokens.mean_per_request), '', `${fmt.int(s.tokens.prompt)} in · ${fmt.int(s.tokens.completion)} out`)}
-      ${kpi('Error rate', fmt.pct(s.error_rate), '', `${s.errors} failed of ${s.requests}`)}
+      ${kpi('First token · p50', s.ttft_ms?.p50 != null ? split(s.ttft_ms.p50)[0] : '–', s.ttft_ms?.p50 != null ? split(s.ttft_ms.p50)[1] : '', s.ttft_ms?.p50 != null ? `p95 ${fmt.ms(s.ttft_ms.p95)} · streamed answers` : 'no streamed answers yet', 'Time from request to the first answer token: routing and retrieval, then the model starts writing')}
+      ${kpi('Cache hit rate', fmt.pct(s.cache?.hit_rate), '', `${fmt.int(s.tokens.mean_per_request)} tokens / uncached request · ${fmt.pct(s.error_rate)} errors`, 'Repeated questions on an unchanged corpus are answered from the response cache')}
       ${kpi('Citation coverage', fmt.pct(Q.mean_citation_coverage), '', 'retrieved docs cited inline', 'Groundedness proxy: share of retrieved documents the answer cites')}
       ${kpi('Abstention', fmt.pct(Q.abstention_rate), '', 'answers declining for lack of evidence')}
     </div>
@@ -1745,17 +1905,140 @@ async function loadTelemetry() {
           <td>${r.engine ? `<span style="display:inline-flex;gap:6px;align-items:center"><i class="swatch" style="background:${META[r.engine]?.color || 'var(--s-neutral)'}"></i>${esc(META[r.engine]?.name || r.engine)}${r.routed ? ' <span class="muted">· routed</span>' : ''}</span>` : '<span class="muted">–</span>'}</td>
           <td class="mono">${fmt.ms(r.latency_ms)}</td><td class="mono">${fmt.int((r.prompt_tokens || 0) + (r.completion_tokens || 0))}</td>
           <td class="mono">${r.output_tokens_per_s ?? '–'}</td><td class="mono">${fmt.usd(r.cost_usd)}</td>
-          <td class="${r.status === 'ok' ? 'status-ok' : 'status-err'} mono">${esc(r.status)}</td></tr>`).join('')}
+          <td class="${r.status === 'ok' || r.status === 'cached' ? 'status-ok' : 'status-err'} mono">${esc(r.status)}</td></tr>`).join('')}
       </tbody></table></div>
     </div>`;
   observeReveals($('#tele'));
 }
 
+/* ───────────── Replay mode ─────────────
+   With no reachable backend (a static host such as Vercel) or with ?replay in the URL, the page
+   replays recorded benchmark runs from data/replay.json (scripts/export_replay.py): real answers
+   from all three engines, judge verdicts, telemetry and the router's decision. Nothing is faked:
+   a typed question that was not recorded is declined rather than answered. */
+async function detectReplay() {
+  const params = new URLSearchParams(location.search);
+  if (!params.has('replay') && !window.LEDGER_REPLAY) {
+    try {
+      const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), 3500);
+      const res = await fetch(API_BASE + '/health', { signal: ctl.signal }); clearTimeout(t);
+      if (res.ok && (res.headers.get('content-type') || '').includes('json')) return null;
+    } catch {}
+  }
+  try { const res = await fetch('data/replay.json', { cache: 'no-cache' }); return res.ok ? await res.json() : null; }
+  catch { return null; }
+}
+
+function replayApi(path) {
+  const d = state.replay;
+  if (path.startsWith('/rl/results')) return Promise.resolve(d.rl_results);
+  if (path.startsWith('/rl/examples')) return Promise.resolve(d.examples);
+  return Promise.reject(Object.assign(new Error('Replay mode: the live backend is not connected.'), { status: 0 }));
+}
+
+function replayEntry() {
+  const q = $('#q').value.trim();
+  return state.replay.showcase.find(s => s.question === q);
+}
+
+function replayMetrics(t) {
+  if (!t) return null;
+  const gen = t.llm_ms || 0;
+  return { ...t, total_tokens: (t.prompt_tokens || 0) + (t.completion_tokens || 0),
+    stage_ms: { retrieval: Math.max(0, (t.latency_ms || 0) - gen), generation: gen },
+    output_tokens_per_s: gen ? Math.round((t.completion_tokens || 0) / (gen / 1000) * 10) / 10 : null,
+    cost_basis: 'Recorded run on a local GPU; cost estimated as GPU $/hr × LLM time. Three engines answered concurrently.' };
+}
+
+function replayResponse(s, engine) {
+  const a = s.answers[engine];
+  return { engine_used: engine, mode_used: 'recorded', answer: a.answer, citations: a.citations,
+    metrics: replayMetrics(a.telemetry), quality: null };
+}
+
+function verdictCard(s, engines) {
+  return `<div class="card reveal" style="margin-top:18px">
+    <div class="card-title"><h3>Judge verdict</h3><span class="hint">blinded ${esc(state.replay.models.judge_model || 'LLM')} judge · reward 0–1</span></div>
+    ${s.reference_answer ? `<div class="ref"><b>Audited reference answer</b>${esc(s.reference_answer)}</div>` : ''}
+    <div class="verdict">${engines.map(e => {
+      const a = s.answers[e];
+      return `<div class="row"><span style="display:flex;gap:7px;align-items:center"><i class="swatch" style="background:${META[e].color}"></i>${META[e].long}</span>
+        <span class="score">${a.reward == null ? '–' : (+a.reward).toFixed(2)}</span>
+        <p class="why">${esc(a.judge_rationale || (s.task === 'numeric' ? 'Scored by exact scalar match against the FinQA gold value.' : ''))}</p></div>`;
+    }).join('')}</div>
+    <p class="note">${s.router_engine ? `The frozen router picked <b>${META[s.router_engine].long}</b> (reward ${(+s.router_reward).toFixed(2)}); the best engine on this question scored ${(+s.oracle_reward).toFixed(2)}.` : ''}
+      Recorded on the ${esc(s.split)} split of ${esc(DATASET_LABEL[s.dataset] || s.dataset)}.</p>
+  </div>`;
+}
+
+function replayAnswer() {
+  const s = replayEntry();
+  if (!s) {
+    $('#results').innerHTML = `<div class="card"><span class="flag warn">replay</span><p style="margin:12px 0 0">This page replays recorded runs, so it can only show questions that were actually benchmarked. Pick one of the recorded questions above. Live questions run on the self-hosted app (<a href="${REPO_URL}">see the repo</a>).</p></div>`;
+    return;
+  }
+  if (state.engine === 'compare') {
+    renderCompare({ graphrag: replayResponse(s, 'graphrag'), vector_rag: replayResponse(s, 'vector_rag'), hybrid_rag: replayResponse(s, 'hybrid_rag') });
+    $('#results').insertAdjacentHTML('beforeend', verdictCard(s, ENGINES));
+  } else {
+    const engine = state.engine === 'auto' ? (s.router_engine || 'hybrid_rag') : state.engine;
+    const r = replayResponse(s, engine);
+    if (state.engine === 'auto') r.routing = { engine, predicted_rewards: s.predicted_rewards, category: s.classified_as, source: 'bandit' };
+    renderAnswer(r);
+    $('#results').insertAdjacentHTML('beforeend', verdictCard(s, [engine]));
+  }
+  observeReveals($('#results'));
+}
+
+function enterReplay() {
+  const d = state.replay, m = d.models || {};
+  document.querySelector('header').insertAdjacentHTML('afterend', `<div class="replay-ribbon"><div class="wrap">
+    <span class="tag">replay</span>
+    <span>Recorded runs from the <b>${esc(d.showcase_split)}</b> split${d.held_out ? ' (held out from router training)' : ''}: <b>${esc(m.answer_model || '')}</b> answering, <b>${esc(m.judge_model || '')}</b> judging, on a local GPU.</span>
+    <a href="${REPO_URL}">Code &amp; live setup →</a></div></div>`);
+  const llm = $('#pill-llm'); llm.querySelector('.dot').className = 'dot warn'; llm.lastElementChild.textContent = 'replay · recorded';
+  const rp = $('#pill-router'); rp.querySelector('.dot').className = 'dot ok'; rp.lastElementChild.textContent = 'router · frozen policy';
+  $('#foot-meta').innerHTML = `replay data · ${esc(d.generated_at)}<br>retrieval · ${esc(m.retrieval_version || '–')}<br>answer model · ${esc(m.answer_model || '–')}`;
+
+  // Ask: recorded questions replace free text.
+  const q = $('#q');
+  q.readOnly = true; q.placeholder = 'Pick a recorded question below, then choose Auto, an engine, or Compare all.';
+  $('.ask-foot').style.display = 'none';
+  $('#chips').innerHTML = d.showcase.map(s => `<button type="button" class="chip" data-q="${esc(s.question)}"><i>${esc((DATASET_LABEL[s.dataset] || s.dataset) + ' · ' + (s.task === 'numeric' ? 'numeric' : s.category.replace('_', '-')))}</i>${esc(s.question.length > 70 ? s.question.slice(0, 68) + '…' : s.question)}</button>`).join('');
+  $('#recent').innerHTML = '';
+
+  // Corpus: recorded ingestion cost instead of uploads.
+  const rows = Object.entries(d.ingestion || {});
+  $('#ingest .ingest-grid').innerHTML = `<div class="card reveal" style="grid-column:1/-1">
+    <div class="card-title"><h3>How the benchmark corpora were ingested</h3><span class="hint">uploads need the live backend</span></div>
+    <p class="note" style="margin-top:0">Each corpus is chunked and embedded for vector and BM25 search. Tables are parsed into one fact per cell with no LLM; prose goes through LLM entity extraction into the knowledge graph, then community detection and summaries. In the live app, uploads go to a private workspace (max 5 files, 10 MB each) that expires after a day.</p>
+    ${rows.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>corpus</th><th>dataset</th><th class="r">docs</th><th class="r">chunks</th><th class="r">entities</th><th class="r">triples</th><th class="r">communities</th><th class="r">LLM calls</th><th class="r">wall time</th></tr></thead><tbody>
+      ${rows.map(([b, x]) => `<tr><td class="mono">${esc(b)}</td><td>${esc(DATASET_LABEL[x.dataset] || x.dataset)} · ${esc(x.split)}</td><td class="r">${fmt.int(x.documents)}</td><td class="r">${fmt.int(x.num_chunks)}</td><td class="r">${fmt.int(x.num_entities)}</td><td class="r">${fmt.int(x.num_triples)}</td><td class="r">${fmt.int(x.num_communities)}</td><td class="r">${fmt.int(x.llm_calls)}</td><td class="r">${fmt.ms(x.latency_ms)}</td></tr>`).join('')}
+    </tbody></table></div>` : ''}
+  </div>`;
+
+  // Telemetry: recorded per-engine latency and tokens instead of live traffic.
+  $('#telemetry .tele-bar').style.display = 'none';
+  const split = d.showcase_split, t = (d.telemetry || {})[split] || {};
+  const maxLat = Math.max(...ENGINES.map(e => t[e]?.latency_p95 || 0), 1);
+  $('#tele').innerHTML = `<div class="card reveal"><div class="card-title"><h3>Recorded latency per engine · ${esc(split)}</h3><span class="hint">bar = p50 · shade = p95</span></div>
+      ${ENGINES.map((e, i) => { const x = t[e] || {}; return `<div class="hbar" data-tip="${META[e].long}<br>p50 ${fmt.ms(x.latency_p50)} · p95 ${fmt.ms(x.latency_p95)}<br>LLM share ${fmt.pct(x.llm_share)}">
+        <span style="display:flex;gap:7px;align-items:center"><i class="swatch" style="background:${META[e].color}"></i>${META[e].name}</span>
+        <div class="track"><span class="p95" style="width:${(x.latency_p95 || 0) / maxLat * 100}%;background:${META[e].color}"></span><span style="width:${(x.latency_p50 || 0) / maxLat * 100}%;background:${META[e].color};animation-delay:${i * .08}s"></span></div>
+        <span class="v">${fmt.ms(x.latency_p50)} / ${fmt.ms(x.latency_p95)} · ${fmt.int(x.prompt_tokens)} in · ${fmt.int(x.completion_tokens)} out</span></div>`; }).join('')}
+      <p class="note">End-to-end latency on a local 7B (8 GB laptop GPU) with all three engines answering concurrently. Retrieval is a small share; generation dominates (LLM share ${fmt.pct(t.hybrid_rag?.llm_share)} for hybrid).</p></div>`;
+  observeReveals();
+}
+
 /* ───────────── Boot ───────────── */
 renderLimits(); renderFiles(); renderRecent();
-heroDemo(); loadStatus(); loadBenchmarks(); loadTelemetry();
-setInterval(() => { if (!document.hidden) loadTelemetry(); }, 15000);
-setInterval(() => { if (!document.hidden && !state.job) loadStatus(); }, 30000);
+(async () => {
+  state.replay = await detectReplay();
+  if (state.replay) { enterReplay(); heroDemo(); loadBenchmarks(); return; }
+  heroDemo(); loadStatus(); loadBenchmarks(); loadTelemetry();
+  setInterval(() => { if (!document.hidden) loadTelemetry(); }, 15000);
+  setInterval(() => { if (!document.hidden && !state.job) loadStatus(); }, 30000);
+})();
 </script>
 </body>
 </html>

@@ -167,6 +167,87 @@ def chat(model, system, user, max_tokens=1000, json_mode=False, temperature=0.1)
         return content
 
 
+def chat_stream(model, system, user, on_token, max_tokens=1000, temperature=0.1):
+    """chat() with incremental output: on_token(piece) receives the text as it is generated.
+    Used for live answers only; offline runs keep the non-streaming chat()."""
+    messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+    api = config.LLM_BACKEND == "api"
+    if api:
+        if not config.API_KEY:
+            raise LLMError("Set HF_TOKEN or LEDGER_API_KEY before using the hosted API.")
+        url, headers = config.API_BASE_URL + "/chat/completions", _headers()
+        payload = {"model": model, "messages": messages, "stream": True, "stream_options": {"include_usage": True},
+                   "max_tokens": max_tokens, "temperature": temperature}
+    else:
+        url, headers = config.OLLAMA_HOST + "/api/chat", {}
+        payload = {"model": model, "messages": messages, "stream": True, "keep_alive": config.OLLAMA_KEEP_ALIVE,
+                   "options": {"num_predict": max_tokens, "temperature": temperature, "num_ctx": config.num_ctx(model)}}
+    attempts = max(1, config.LLM_RETRIES)
+    # Retry only until the stream opens: once text has been sent it cannot be taken back.
+    for attempt in range(attempts):
+        try:
+            pace_request()
+            started = time.perf_counter()
+            response = requests.post(url, headers=headers, json=payload, stream=True,
+                                     timeout=(10, config.OLLAMA_REQUEST_TIMEOUT))
+        except requests.RequestException as error:
+            if attempt + 1 >= attempts or isinstance(error, (requests.exceptions.SSLError, requests.exceptions.ProxyError)):
+                raise LLMError(f"LLM request failed for {model}. {transport_error(error, url)}") from None
+            time.sleep(min(2 ** attempt, 8))
+            continue
+        if (response.status_code == 429 or response.status_code >= 500) and attempt + 1 < attempts:
+            delay = rate_limit_delay(response, attempt) if response.status_code == 429 else min(2 ** attempt, 8)
+            response.close()
+            time.sleep(min(delay, 60))
+            continue
+        if not response.ok:
+            response.close()
+            raise LLMError(f"LLM HTTP {response.status_code} for {model}; check model availability, credentials, credits, and provider limits.")
+        break
+    parts, final = [], {}
+    try:
+        with response:
+            for line in response.iter_lines(decode_unicode=True):
+                if not line:
+                    continue
+                if api:
+                    if not line.startswith("data:"):
+                        continue
+                    body = line[5:].strip()
+                    if body == "[DONE]":
+                        break
+                    data = json.loads(body)
+                    if data.get("usage"):
+                        final["usage"] = data["usage"]
+                    choice = (data.get("choices") or [{}])[0]
+                    if choice.get("finish_reason"):
+                        final["finish_reason"] = choice["finish_reason"]
+                    piece = (choice.get("delta") or {}).get("content") or ""
+                else:
+                    data = json.loads(line)
+                    if data.get("error"):
+                        raise LLMError(f"LLM stream error for {model}.")
+                    piece = (data.get("message") or {}).get("content") or ""
+                    if data.get("done"):
+                        final = data
+                if piece:
+                    if not parts:
+                        telemetry.mark_first_token()
+                    parts.append(piece)
+                    on_token(piece)
+    except requests.RequestException as error:
+        raise LLMError(f"LLM stream failed for {model}. {transport_error(error, url)}") from None
+    except ValueError:
+        raise LLMError(f"Invalid streamed response from {model}.") from None
+    if (final.get("finish_reason") if api else final.get("done_reason")) == "length":
+        raise OutputTruncatedError(f"Output truncated for {model} at max_tokens={max_tokens}; increase max_tokens or shorten input.")
+    content = "".join(parts)
+    if not content.strip():
+        raise LLMError(f"Empty chat response from {model}.")
+    _record_usage(model, final, time.perf_counter() - started, system + user, content)
+    return content
+
+
 def _record_usage(model, data, seconds, prompt_text, content):
     """Report provider token counts to the active request trace (no-op without one)."""
     if config.LLM_BACKEND == "api":

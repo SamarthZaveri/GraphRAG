@@ -4,6 +4,13 @@ Each dataset gets equal weight, and within a dataset the numeric task (if any) g
 --numeric-weight while the four text categories share the rest equally, so no dataset or
 category dominates just by having more questions.
 
+--feedback full (the default) updates every arm with its known reward for each question: offline,
+all three engines were run on every train question, so there is nothing to explore and discarding
+the counterfactual rewards only adds noise. --feedback bandit replays the questions as an online
+LinUCB run that sees only the chosen arm's reward; its policy depends on the question order (the
+seed and the order of --results), and on dev it ranged from 0.69 to 0.80 across orders, while full
+feedback is order-independent.
+
 --latency-weight turns on cost-aware routing: the reward becomes
 quality - weight * min(latency / 60 s, 1), so between engines of similar quality the router
 learns to prefer the faster one."""
@@ -57,13 +64,17 @@ def load_results(path):
     return rows
 
 
-def train(rows, alpha=1., seed=0, latency_weight=0.):
-    """Simulate online LinUCB learning using only each selected arm's reward."""
+def train(rows, alpha=1., seed=0, latency_weight=0., feedback="full"):
+    """Fit the per-arm LinUCB estimates: from every arm's reward (full) or by simulating online
+    learning that observes only each selected arm's reward (bandit)."""
+    if feedback not in ("full", "bandit"):
+        raise ValueError("Feedback must be 'full' or 'bandit'")
     policy = LinUCBBandit(QUERY_CONTEXT_DIM, ARMS, alpha)
     for index in np.random.default_rng(seed).permutation(len(rows)):
         row = rows[index]
-        arm, _ = policy.select_arm(row["context"])
-        policy.update(arm, row["context"], effective_reward(row, arm, latency_weight), weight=row["sample_weight"])
+        arms = ARMS if feedback == "full" else [policy.select_arm(row["context"])[0]]
+        for arm in arms:
+            policy.update(arm, row["context"], effective_reward(row, arm, latency_weight), weight=row["sample_weight"])
     return policy
 
 
@@ -111,10 +122,11 @@ def main():
     parser.add_argument("--latency-weight", type=float, default=0.)
     parser.add_argument("--alpha", type=float, default=1.)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--feedback", choices=("full", "bandit"), default="full")
     args = parser.parse_args()
     import tracking
     rows = load_weighted(args.results, args.numeric_weight)
-    policy = train(rows, args.alpha, args.seed, args.latency_weight)
+    policy = train(rows, args.alpha, args.seed, args.latency_weight, args.feedback)
     datasets = {}
     for row in rows:
         datasets[row["metadata"]["dataset"]] = row["metadata"]["dataset_fingerprint"]
@@ -122,12 +134,16 @@ def main():
     policy.metadata = {**{k: first.get(k) for k in MODEL_KEYS + ("question_model",)}, "split": "train",
                        "datasets": datasets, "dataset": "+".join(sorted(datasets)),
                        "metrics": sorted({r["metadata"]["metric"] for r in rows}),
-                       "numeric_weight": args.numeric_weight, "latency_weight": args.latency_weight}
+                       "numeric_weight": args.numeric_weight, "latency_weight": args.latency_weight,
+                       "feedback": args.feedback}
     args.output.parent.mkdir(parents=True, exist_ok=True)
     policy.save(args.output)
-    settings = {"alpha": args.alpha, "seed": args.seed, "numeric_weight": args.numeric_weight, "latency_weight": args.latency_weight}
+    settings = {"alpha": args.alpha, "seed": args.seed, "feedback": args.feedback, "numeric_weight": args.numeric_weight, "latency_weight": args.latency_weight}
     args.output.with_suffix(".training.json").write_text(json.dumps({"rows": len(rows), **settings, "metadata": policy.metadata}, indent=2))
     tracking.log_router_training(args.output.parent, args.output, policy.metadata, settings, len(rows))
+    version = tracking.register_policy(args.output, {**policy.metadata, "feedback": args.feedback})
+    if version:
+        print(f"Registered as MLflow model {tracking.REGISTERED_MODEL} version {version}")
     print("Saved deployable router:", args.output, "| datasets:", ", ".join(sorted(datasets)), "| rows:", len(rows))
 
 

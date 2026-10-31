@@ -28,3 +28,11 @@ def _isolated_guardrails(tmp_path, monkeypatch):
 def _no_experiment_tracking(monkeypatch):
     """Benchmark tests must not write runs into the real MLflow store."""
     monkeypatch.setenv("LEDGER_MLFLOW", "0")
+
+
+@pytest.fixture(autouse=True)
+def _no_response_cache(tmp_path, monkeypatch):
+    """API tests answer fresh; cache tests turn it back on explicitly."""
+    from app import config
+    monkeypatch.setattr(config, "RESPONSE_CACHE", False)
+    monkeypatch.setattr(config, "RESPONSE_CACHE_PATH", tmp_path / "response_cache.sqlite3")

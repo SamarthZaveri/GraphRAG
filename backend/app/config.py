@@ -81,6 +81,8 @@ RL_RESULTS_DIR = Path(os.environ.get("LEDGER_RL_RESULTS_DIR", str(BACKEND_ROOT.p
 MAX_UPLOAD_FILES = int(os.environ.get("LEDGER_MAX_UPLOAD_FILES", "5"))
 MAX_UPLOAD_MB = float(os.environ.get("LEDGER_MAX_UPLOAD_MB", "10"))
 ALLOWED_UPLOAD_EXTENSIONS = (".pdf", ".txt", ".md")
+# Extraction cost grows with pages; earnings releases run 10-30 pages, annual reports 100+.
+MAX_PDF_PAGES = int(os.environ.get("LEDGER_MAX_PDF_PAGES", "60"))
 CORS_ORIGINS = [o.strip() for o in os.environ.get("LEDGER_CORS_ORIGINS", "*").split(",") if o.strip()]
 
 # Public deployment guardrails. In public mode the shared corpus is read-only without the admin token;
@@ -103,3 +105,10 @@ TRUST_PROXY = os.environ.get("LEDGER_TRUST_PROXY", "false").lower() == "true"
 # Concurrent LLM-backed requests admitted at once; the rest get a fast 503 instead of a long hang.
 MAX_CONCURRENT_LLM_REQUESTS = int(os.environ.get("LEDGER_MAX_CONCURRENT_LLM_REQUESTS", "4"))
 LLM_QUEUE_WAIT_SECONDS = float(os.environ.get("LEDGER_LLM_QUEUE_WAIT_SECONDS", "3"))
+
+# "cpu" tells the UI that answers are slow (a 7B model generates a few tokens a second on CPU).
+INFERENCE_DEVICE = os.environ.get("LEDGER_INFERENCE_DEVICE", "gpu").lower()
+# Answers already given for the same question, engine and corpus are served from this cache.
+RESPONSE_CACHE = os.environ.get("LEDGER_RESPONSE_CACHE", "true").lower() == "true"
+RESPONSE_CACHE_PATH = DATA_DIR / "response_cache.sqlite3"
+RESPONSE_CACHE_MAX_ROWS = int(os.environ.get("LEDGER_RESPONSE_CACHE_MAX_ROWS", "5000"))

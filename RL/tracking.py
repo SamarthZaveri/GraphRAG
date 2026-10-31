@@ -10,6 +10,7 @@ Tracking is optional and never fails a run: it is skipped when mlflow is not ins
 LEDGER_MLFLOW=0, and logging errors are reported and ignored. Runs are grouped by the run
 directory name (the model profile) in the "run_group" tag."""
 from __future__ import annotations
+import hashlib
 import json
 import os
 import traceback
@@ -17,6 +18,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 EXPERIMENT = os.environ.get("LEDGER_MLFLOW_EXPERIMENT", "ledger-adaptive-rag")
+REGISTERED_MODEL = os.environ.get("LEDGER_MLFLOW_MODEL", "ledger-router")
 TRACKING_URI = os.environ.get("MLFLOW_TRACKING_URI", "sqlite:///" + (ROOT / "mlflow.db").as_posix())
 ARTIFACT_ROOT = ROOT / "mlruns"
 
@@ -91,6 +93,47 @@ def log_router_training(run_dir, policy_path, metadata, settings, rows):
          {"stage": "train_router"})
 
 
+def register_policy(policy_path, metadata, metrics=None, alias=None):
+    """Register a router policy as a version of the MLflow model REGISTERED_MODEL (a pyfunc,
+    router_pyfunc.py: query contexts in, chosen engine and predicted rewards out), tagged with its
+    sha256, models and datasets. A policy already registered (same sha256) gets no new version;
+    `metrics` are added as tags and `alias` (e.g. "champion" for a frozen release) is pointed at it.
+    Returns the version, or None when tracking is off or fails."""
+    mlflow = _mlflow()
+    if mlflow is None:
+        return None
+    try:
+        import pandas as pd
+        from mlflow import MlflowClient
+        from router_pyfunc import CONTEXT_COLUMNS
+        client = MlflowClient()
+        digest = hashlib.sha256(Path(policy_path).read_bytes()).hexdigest()
+        known = [v for v in client.search_model_versions(f"name='{REGISTERED_MODEL}'") if v.tags.get("policy_sha256") == digest]
+        if known:
+            version = known[0].version
+        else:
+            with mlflow.start_run(run_name="router register"):
+                mlflow.set_tags({"stage": "register_router", "policy_sha256": digest})
+                example = pd.DataFrame([[0.4, 0.5, 0.6, 0.0, 0.0, 1.0, 0.0, 1.0]], columns=CONTEXT_COLUMNS)
+                info = mlflow.pyfunc.log_model(name="router", python_model=str(ROOT / "router_pyfunc.py"),
+                                               artifacts={"policy": str(policy_path)}, input_example=example,
+                                               registered_model_name=REGISTERED_MODEL)
+            version = info.registered_model_version
+        tags = {"policy_sha256": digest, **{k: v for k, v in (metadata or {}).items() if not isinstance(v, (dict, list))},
+                "datasets": ",".join(sorted((metadata or {}).get("datasets") or {})),
+                **{f"metric/{k}": v for k, v in (metrics or {}).items()}}
+        for key, value in tags.items():
+            if value is not None:
+                client.set_model_version_tag(REGISTERED_MODEL, version, key, str(value)[:500])
+        if alias:
+            client.set_registered_model_alias(REGISTERED_MODEL, alias, version)
+        return version
+    except Exception:
+        traceback.print_exc()
+        print("MLflow model registration failed; the policy file is unaffected.", flush=True)
+        return None
+
+
 def log_analysis(run_dir, split, analysis, path):
     metrics = {}
     for name, block in [("all", analysis)] + list((analysis.get("by_dataset") or {}).items()):
@@ -103,5 +146,9 @@ def log_analysis(run_dir, split, analysis, path):
                 metrics[f"{name}/router_{key}"] = router[key]
         for engine, diff in (router.get("vs_engines") or {}).items():
             metrics[f"{name}/router_minus_{engine}"] = diff["mean_diff"]
+        for engine, scores in (block.get("retrieval") or {}).items():
+            for key, value in scores.items():
+                if key != "n" and value is not None:
+                    metrics[f"{name}/retrieval/{engine}/{key.replace('@', '_at_')}"] = value
     _log(f"analysis {split}", run_dir, {**config_params(), "split": split}, metrics, [path],
          {"stage": "analyze", "split": split})

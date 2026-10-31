@@ -138,6 +138,24 @@ def test_three_arm_training_and_legacy_reward_rejection(tmp_path):
         trainer.load_results(legacy)
 
 
+def test_full_feedback_training_is_independent_of_question_order():
+    import train_shared_router as trainer
+    from app import config
+    from app.router_features import build_query_context
+    rows = []
+    for i, category in enumerate(["local", "global", "multi_hop", "conflict"] * 10):
+        best = ["graphrag", "vector_rag", "hybrid_rag"][i % 3]
+        rows.append({"context": build_query_context(np.array([0.1 * (i % 5), 0.2, 0.6, 1]), category).tolist(),
+                     **{"reward_" + a: (0.9 if a == best else 0.3) for a in trainer.ARMS}, "sample_weight": 1 + i % 2,
+                     "metadata": {"retrieval_version": config.RETRIEVAL_VERSION}})
+    first, second = trainer.train(rows, 1.0, 0), trainer.train(rows[::-1], 1.0, 7)
+    for arm in trainer.ARMS:
+        assert np.allclose(first.A[arm], second.A[arm]) and np.allclose(first.b[arm], second.b[arm])
+        assert np.allclose(first.A[arm] - np.identity(8), sum(r["sample_weight"] * np.outer(r["context"], r["context"]) for r in rows))
+    with pytest.raises(ValueError, match="Feedback"):
+        trainer.train(rows, feedback="partial")
+
+
 def test_api_selects_hybrid_and_comparison_includes_all_three():
     from app import main, models
     def response(engine, question, mode="auto", classification=None):

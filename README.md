@@ -1,5 +1,11 @@
 # Ledger: adaptive retrieval over financial reports
 
+[![CI](https://github.com/SamarthZaveri/GraphRAG/actions/workflows/ci.yml/badge.svg)](https://github.com/SamarthZaveri/GraphRAG/actions/workflows/ci.yml)
+
+**Live replay:** _Vercel URL after deploy_ · **Live app:** _Hugging Face Space URL_ · **Demo video:** _link_ · **Deploy guide:** [docs/DEPLOY.md](docs/DEPLOY.md)
+
+**The question:** when does a knowledge graph actually beat plain retrieval over financial filings, and can a learned router exploit the difference? The answer so far, from the 164-question train split (held-out dev and test pending): hybrid lexical + dense retrieval is the strongest single engine; GraphRAG earns its cost only on cross-document questions; and a router's gain is capped by how often the best engine changes question to question.
+
 Three retrieval engines answer questions over financial filings, and a learned router (LinUCB contextual bandit) picks one per question:
 
 - **GraphRAG**: an entity graph built from the filings. Tables are parsed deterministically into one fact per cell; prose goes through LLM extraction. Local search ranks the facts and source chunks in the question's entity neighborhood; global search ranks community summaries and grounds each with its member chunks.
@@ -12,6 +18,29 @@ Two benchmarks share the pipeline, with disjoint train/dev/test splits:
 - `edgar_xdoc`: real SEC earnings releases (8-K Item 2.02, Exhibit 99.1). Each corpus is a sector peer group, 3 companies x 2 quarters, so questions genuinely span documents. Splits are disjoint by sector.
 
 Only source text enters the indexes; gold answers, programs and generated references stay outside retrieval.
+
+## Results
+
+Mean reward (0–1) with bootstrap 95% CIs. The router is trained on train only; dev and test sectors never appear in training.
+
+| Split | Questions | GraphRAG | Vector | Hybrid | Router | Oracle |
+|---|---|---|---|---|---|---|
+| train (in-sample) | 164 | 0.54 | 0.63 | **0.71** | n/a | 0.85 |
+| dev | 88 | _pending_ | | | | |
+| test | 88 | _pending_ | | | | |
+
+By dataset (train): on single-page **FinQA**, GraphRAG trails (0.52 vs 0.74 hybrid). On cross-document **SEC EDGAR**, it beats dense vector retrieval (0.60 vs 0.54), most clearly on consistency checks, but hybrid still leads (0.70). The oracle gap (0.85 vs 0.71) is per-question: no engine wins a whole category, which bounds what a category-level router can learn.
+
+Full numbers: `releases/<tag>/` (frozen results, policy, manifest with commit, models and dataset fingerprints) and the replay site.
+
+### Engineering notes (what broke and how it was fixed)
+
+- **Scorer bug inflated failures**: a bare `12.5` against a gold `12.5%` scored zero. Numeric scorer v2 handles percent/ratio forms, the filing's scale and unit words; old answers were re-scored offline from checkpoints (`RL/rescore_numeric.py`).
+- **Tables lost in extraction**: the LLM dropped table rows. Tables are now parsed deterministically (FinQA rows, EDGAR HTML with colspans and split `$`/`)` cells) into one fact per cell.
+- **GraphRAG silently capped at 800 facts** in discovery order, dropping ~70% of a large neighborhood unranked. Embeddings are now cached and the whole neighborhood is ranked: retrieval went from 16 s to 0.12 s per query.
+- **Benchmark questions with unlabeled numbers**: the generator cut table rows mid-line, so multi-hop questions failed audit. Passages now break only between lines.
+- **Router training depended on question order**: replaying train questions as an online bandit (updating only the picked engine) gave dev scores from 0.69 to 0.80 depending on the shuffle. Offline, every engine's reward is known, so training now uses all of them (`--feedback full`): deterministic, and it matches hybrid on dev (0.791 vs 0.789).
+- **Small-model failure modes**: extraction loops on a few chunks are split instead of retried with bigger budgets; runaway answers get one bigger budget, then score zero instead of aborting the run.
 
 ## Run the experiment locally
 
@@ -76,6 +105,15 @@ Ollama must be reachable from the container; configure its host binding appropri
 
 Optional R-GCN training requires `python -m pip install -r backend/requirements-rgcn.txt`. The default app and experiments use the base dependencies.
 
+## Serving and MLOps
+
+- **Streaming:** `POST /api/query/stream` sends server-sent events: the routing decision, then answer text as it is generated, then the full response. Time to first token is in each response's metrics and in `/api/metrics` (p50/p95).
+- **Response cache:** a repeated question (normalized) with the same engine is served from SQLite. The cache key includes content hashes of the corpus, the router policy, the models and the retrieval version, so re-ingesting invalidates it. `/api/metrics` reports the hit rate separately from model latency.
+- **Upload limits:** 5 files × 10 MB, PDFs up to 60 pages (`LEDGER_MAX_PDF_PAGES`), with encrypted and scanned PDFs rejected.
+- **Retrieval metrics:** document-level hit rate, MRR, precision@k, recall@k and nDCG@k (k = 1, 3, 5) per engine and dataset, in each split's `analysis.json` and in MLflow.
+- **Model registry:** each trained policy is registered as a version of the MLflow model `ledger-router` (a pyfunc: context in, engine and predicted rewards out, `RL/router_pyfunc.py`). `freeze_release.py` points the `champion` alias at the released policy and tags it with its held-out scores.
+- **CI quality gate:** `scripts/quality_gate.py` checks the newest release. It fails the build if the files no longer match the manifest, a run is incomplete, or the router falls more than 0.02 below the best single engine or is significantly worse than any engine.
+
 ## Code layout
 
 - `backend/app/`: ingestion, graph construction, retrieval, scoring and app routing. `table_parser.py` and `html_text.py` turn filing tables into deterministic facts.
@@ -86,6 +124,9 @@ Optional R-GCN training requires `python -m pip install -r backend/requirements-
 - `RL/analyze_results.py`: bootstrap confidence intervals, routing behaviour, latency, per-dataset breakdown.
 - `RL/tracking.py`: MLflow logging. `RL/rescore_numeric.py`: offline re-scoring after a scorer change.
 - `scripts/run-local-flow.ps1`: the end-to-end workflow; `scripts/use-ollama.ps1`: model profiles.
+- `backend/app/response_cache.py`: answer cache. `RL/router_pyfunc.py`: MLflow model for the policy. `scripts/quality_gate.py`: CI check on frozen results. `scripts/warm_cache.py`: pre-answers questions for slow deployments.
+- `scripts/export_replay.py`: static replay data for the frontend; `scripts/freeze_release.py`: versioned results releases; `scripts/build_demo_corpus.ps1`: pre-ingested corpus for public deployments.
+- `deploy/hf-space/`: free Hugging Face Space (Ollama 7B + app); `vercel.json`: static replay site; `.github/workflows/ci.yml`: tests, lint, Docker build.
 - `.env.example`: Docker configuration; `backend/requirements-rgcn.txt`: optional graph training dependencies.
 
 ## Verification and details

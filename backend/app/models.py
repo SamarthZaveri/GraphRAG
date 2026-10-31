@@ -1,6 +1,6 @@
 from __future__ import annotations
 from typing import List, Optional, Literal
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class Triple(BaseModel):
@@ -44,7 +44,8 @@ class IngestResponse(BaseModel):
 
 
 class QueryRequest(BaseModel):
-    question: str
+    # Bounded input: a question is a sentence or two, and long inputs inflate prompt cost.
+    question: str = Field(min_length=1, max_length=2000)
     mode: Literal["auto", "local", "global"] = "auto"
     engine: Literal["auto", "graphrag", "vector_rag", "hybrid_rag"] = "auto"
 
@@ -66,6 +67,7 @@ class QueryResponse(BaseModel):
     routing: Optional[dict] = None  # router evidence when engine="auto" (category, predicted rewards)
     metrics: Optional[dict] = None  # latency, stage timings, tokens, throughput, cost (telemetry.Trace.summary)
     quality: Optional[dict] = None  # reference-free signals: citation coverage, abstention (telemetry.answer_quality)
+    cache_hit: bool = False  # served from response_cache; metrics describe the original request
 
 
 class CompareResponse(BaseModel):
@@ -73,6 +75,7 @@ class CompareResponse(BaseModel):
     graphrag: QueryResponse
     vector_rag: QueryResponse
     hybrid_rag: Optional[QueryResponse] = None
+    cache_hit: bool = False
 
 
 class BenchmarkQuestion(BaseModel):

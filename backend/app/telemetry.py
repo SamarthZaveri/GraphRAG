@@ -22,6 +22,7 @@ ABSTAIN_PATTERN = re.compile(r"cannot be (established|determined)|insufficient|n
 class Trace:
     def __init__(self):
         self.started = time.perf_counter()
+        self.first_token_s = None
         self.llm_calls = []
         self.stages = {}
         self._stack = []
@@ -35,6 +36,11 @@ class Trace:
     def add_stage(self, name, seconds):
         with self._lock:
             self.stages[name] = self.stages.get(name, 0.0) + seconds
+
+    def mark_first_token(self):
+        with self._lock:
+            if self.first_token_s is None:
+                self.first_token_s = time.perf_counter() - self.started
 
     def elapsed_ms(self):
         return (time.perf_counter() - self.started) * 1000
@@ -52,7 +58,9 @@ class Trace:
             s["completion_tokens"] += c["completion_tokens"]
             s["ms"] += c["seconds"] * 1000
         cost, basis = estimate_cost(prompt, completion, llm_s)
+        streamed = {} if self.first_token_s is None else {"ttft_ms": round(self.first_token_s * 1000, 1)}
         return {
+            **streamed,
             "latency_ms": round(self.elapsed_ms(), 1),
             "stage_ms": {k: round(v * 1000, 1) for k, v in self.stages.items()},
             "llm_ms": round(llm_s * 1000, 1),
@@ -128,6 +136,13 @@ def record_llm_call(model, seconds, prompt_tokens=None, completion_tokens=None,
         "completion_tokens": completion_tokens if completion_tokens is not None else estimate_tokens(completion_text),
         "estimated": estimated,
     })
+
+
+def mark_first_token():
+    """Time to first answer token, measured from the start of the request (streamed answers only)."""
+    t = _current.get()
+    if t is not None:
+        t.mark_first_token()
 
 
 def bind(fn):

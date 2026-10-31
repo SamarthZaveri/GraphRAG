@@ -47,3 +47,13 @@ outputs/
 RL/mlflow.db
 RL/mlruns/
 mlruns/
+
+# Static replay data and frozen releases are published, unlike working data
+!frontend/data/
+!releases/**
+
+# Build outputs (demo corpus archives)
+dist/
+
+# Personal career notes (interview prep, outreach drafts)
+/career/

@@ -55,7 +55,7 @@ def record(endpoint, status, metrics=None, engine=None, routed=False, quality=No
                  metrics.get("llm_calls"), metrics.get("prompt_tokens"), metrics.get("completion_tokens"),
                  metrics.get("output_tokens_per_s"), metrics.get("cost_usd"),
                  None if "abstained" not in quality else int(quality["abstained"]), quality.get("citation_coverage"),
-                 json.dumps({"stage_ms": metrics.get("stage_ms"), **(detail or {})})))
+                 json.dumps({"stage_ms": metrics.get("stage_ms"), "ttft_ms": metrics.get("ttft_ms"), **(detail or {})})))
     except sqlite3.Error as error:
         print(f"  [metrics] failed to record {endpoint}: {error}", flush=True)
 
@@ -84,11 +84,16 @@ def summary(window_minutes=60, endpoint=None):
     query = "SELECT * FROM requests WHERE ts >= ?" + (" AND endpoint = ?" if endpoint else "") + " ORDER BY ts"
     with _db() as conn:
         rows = [dict(r) for r in conn.execute(query, (since, endpoint) if endpoint else (since,))]
+    # Cache hits are neither errors nor model work: counted apart so they don't flatter latency.
     ok = [r for r in rows if r["status"] == "ok"]
-    stage_ms = {}
+    cached = [r for r in rows if r["status"] == "cached"]
+    stage_ms, ttft_ms = {}, []
     for r in ok:
-        for stage, ms in (json.loads(r["detail"] or "{}").get("stage_ms") or {}).items():
+        detail = json.loads(r["detail"] or "{}")
+        for stage, ms in (detail.get("stage_ms") or {}).items():
             stage_ms.setdefault(stage, []).append(ms)
+        if detail.get("ttft_ms") is not None:
+            ttft_ms.append(detail["ttft_ms"])
     # Throughput over the span actually observed, so a short burst isn't diluted by an idle window.
     span_s = max(rows[-1]["ts"] - rows[0]["ts"], 1.0) if len(rows) > 1 else window_minutes * 60
     llm_s = sum((r["llm_ms"] or 0) for r in ok) / 1000
@@ -104,9 +109,12 @@ def summary(window_minutes=60, endpoint=None):
     return {
         "window_minutes": window_minutes,
         "requests": len(rows),
-        "errors": len(rows) - len(ok),
-        "error_rate": round((len(rows) - len(ok)) / len(rows), 4) if rows else None,
+        "errors": len(rows) - len(ok) - len(cached),
+        "error_rate": round((len(rows) - len(ok) - len(cached)) / len(rows), 4) if rows else None,
         "latency_ms": _latency([r["latency_ms"] for r in ok if r["latency_ms"] is not None]),
+        "ttft_ms": _latency(ttft_ms),
+        "cache": {"hits": len(cached), "hit_rate": round(len(cached) / (len(ok) + len(cached)), 4) if ok or cached else None,
+                  "latency_ms": _latency([r["latency_ms"] for r in cached if r["latency_ms"] is not None])},
         "stage_latency_ms": {s: _latency(v) for s, v in stage_ms.items()},
         "throughput": {
             "requests_per_min": round(len(rows) / span_s * 60, 3) if rows else 0.0,

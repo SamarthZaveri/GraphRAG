@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      LEDGER_MLFLOW: "0"            # never write experiment runs from CI
+      ANONYMIZED_TELEMETRY: "False"
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements.txt
+            RL/requirements.txt
+      - name: Install dependencies
+        run: python -m pip install -r RL/requirements.txt
+      - name: Unit and pipeline tests (LLM calls are mocked)
+        run: python -m pytest RL/tests -q
+
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Python errors (syntax, undefined names)
+        run: |
+          python -m pip install ruff==0.6.9
+          ruff check --select E9,F63,F7,F82 backend RL scripts
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Frontend script parses
+        run: |
+          python - <<'EOF'
+          import re, pathlib
+          html = pathlib.Path("frontend/index.html").read_text(encoding="utf-8")
+          pathlib.Path("page.js").write_text("\n".join(re.findall(r"<script>(.*?)</script>", html, re.S)), encoding="utf-8")
+          EOF
+          node --check page.js
+      - name: Replay data is valid JSON (if exported)
+        run: |
+          if [ -f frontend/data/replay.json ]; then python -m json.tool frontend/data/replay.json > /dev/null; fi
+      - name: Quality gate on the newest frozen release (router vs engines, integrity, completeness)
+        run: python scripts/quality_gate.py
+
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [test, lint]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build app image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: ledger:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

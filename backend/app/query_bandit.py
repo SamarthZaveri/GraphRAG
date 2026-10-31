@@ -1,7 +1,8 @@
 """LinUCB contextual bandit shared by offline training and app routing.
 
-Training selects arms using the uncertainty bonus and updates the selected
-arm from its observed reward. Serving selects the greatest predicted reward
+Offline training updates every arm with its known reward (full feedback), or
+optionally simulates online learning that selects arms by the uncertainty bonus
+and updates only the selected arm. Serving selects the greatest predicted reward
 without exploration or updates. Policies persist as JSON."""
 from __future__ import annotations
 import json
