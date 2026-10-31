@@ -4,7 +4,7 @@
 
 **Live replay:** _Vercel URL after deploy_ · **Live app:** _Hugging Face Space URL_ · **Demo video:** _link_ · **Deploy guide:** [docs/DEPLOY.md](docs/DEPLOY.md)
 
-**The question:** when does a knowledge graph actually beat plain retrieval over financial filings, and can a learned router exploit the difference? The answer so far, from the 164-question train split (held-out dev and test pending): hybrid lexical + dense retrieval is the strongest single engine; GraphRAG earns its cost only on cross-document questions; and a router's gain is capped by how often the best engine changes question to question.
+**The question:** when does a knowledge graph actually beat plain retrieval over financial filings, and can a learned router exploit the difference? The answer, on held-out dev and test splits: hybrid lexical + dense retrieval is the strongest single engine on both benchmarks; GraphRAG's edge on cross-document questions in training did not survive to the test sectors; and the learned router matches hybrid (significantly better than vector and GraphRAG) but does not beat it, because the best engine changes question to question in ways the router's features cannot predict.
 
 Three retrieval engines answer questions over financial filings, and a learned router (LinUCB contextual bandit) picks one per question:
 
@@ -26,10 +26,14 @@ Mean reward (0–1) with bootstrap 95% CIs. The router is trained on train only;
 | Split | Questions | GraphRAG | Vector | Hybrid | Router | Oracle |
 |---|---|---|---|---|---|---|
 | train (in-sample) | 164 | 0.54 | 0.63 | **0.71** | n/a | 0.85 |
-| dev | 88 | _pending_ | | | | |
-| test | 88 | _pending_ | | | | |
+| dev | 88 | 0.60 | 0.68 | 0.79 | **0.79** | 0.85 |
+| test | 88 | 0.44 | 0.60 | 0.67 | **0.67** | 0.78 |
 
-By dataset (train): on single-page **FinQA**, GraphRAG trails (0.52 vs 0.74 hybrid). On cross-document **SEC EDGAR**, it beats dense vector retrieval (0.60 vs 0.54), most clearly on consistency checks, but hybrid still leads (0.70). The oracle gap (0.85 vs 0.71) is per-question: no engine wins a whole category, which bounds what a category-level router can learn.
+On test the router is significantly better than vector (+0.077, 95% CI [0.011, 0.148]) and GraphRAG (+0.230), and level with hybrid (+0.002, CI [−0.014, 0.018]). It picks hybrid for 85% of test questions and vector for the rest, never GraphRAG; it picks the best available engine 77% of the time.
+
+By dataset (test): on single-page **FinQA**, hybrid 0.68, vector 0.65, GraphRAG 0.45; the router 0.68. On cross-document **SEC EDGAR**, hybrid 0.66, vector 0.49, GraphRAG 0.43; the router 0.67. In training GraphRAG beat vector on EDGAR (0.60 vs 0.54) and on dev the two tied (0.63 vs 0.62), but on the test sectors it lost. The oracle gap (0.78 vs 0.67 on test) is per-question: no engine wins a whole category, which bounds what a category-level router can learn.
+
+Retrieval quality follows the same order. Document-level nDCG@5 on test: hybrid 0.95, vector 0.89, GraphRAG 0.83; on EDGAR, GraphRAG (0.81) ranks the right filings above vector (0.77) but below hybrid (0.87), so its answer-quality loss there comes after retrieval.
 
 Full numbers: `releases/<tag>/` (frozen results, policy, manifest with commit, models and dataset fingerprints) and the replay site.
 
